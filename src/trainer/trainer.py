@@ -1,41 +1,108 @@
 import torch
-# from flow_matching.paths import GaussianPath
-# from flow_matching.losses import conditional_flow_loss
+import torch.nn as nn
 
-class Trainer:
-    def __init__(self, model, optimizer, config, ):
+from tqdm import tqdm
+from abc import ABC, abstractmethod
+from src.flow.path import GaussianConditionalProbabilityPath
+from src.flow.losses import flow_matching_loss
+from src.models.unet import ConditionalVectorField
+
+## path, unet, loss
+MiB = 1024 ** 2
+
+def model_size_b(model: nn.Module) -> int:
+    """
+    Returns model size in bytes. Based on https://discuss.pytorch.org/t/finding-model-size/130275/2
+    Args:
+    - model: self-explanatory
+    Returns:
+    - size: model size in bytes
+    """
+    size = 0
+    for param in model.parameters():
+        size += param.nelement() * param.element_size()
+    for buf in model.buffers():
+        size += buf.nelement() * buf.element_size()
+    return size
+
+class Trainer(ABC):
+    """
+    Abstract base class for Trainer 
+    """
+    def __init__(self, model: nn.Module):
+        super().__init__()
         self.model = model
-        self.optimizer = optimizer
-        self.config = config
-        # self.path = GaussianPath()
-        
-    def train_step(self, batch):
-        # batch should contain the original data x0
-        x0 = batch
-        
-        # 1. Sample random time t ~ U[0, 1]
-        # Adding a small epsilon to avoid t=0 issues if any
-        t = torch.rand(x0.shape[0], device=x0.device) * (1 - 1e-4) + 1e-4
 
-        # 2. Sample random noise
-        epsilon = torch.randn_like(x0)
+    @abstractmethod
+    def get_train_loss(self, **kwargs) -> torch.Tensor:
+        pass
 
-        # 3. Compute x_t and the target vector field u_t using the path object
-        x_t, u_t = self.path.get_xt_and_ut(x0, t, epsilon)
+    def get_optimizer(self, lr: float):
+        return torch.optim.Adam(self.model.parameters(), lr=lr)
 
-        # 4. Get model prediction for the vector field
-        v_pred = self.model(x_t, t)
+    def train(self, num_epochs: int, device: torch.device, lr: float = 1e-3, **kwargs) -> torch.Tensor:
+        """
+        Main training loop
+        """
+        # Report model size
+        size_b = model_size_b(self.model)
+        print(f'Training model with size: {size_b / MiB:.3f} MiB')
+        
+        # Set model and optimizers
+        self.model.to(device)
+        opt = self.get_optimizer(lr)
+        self.model.train()
 
-        # 5. Calculate loss
-        loss = conditional_flow_loss(v_pred, u_t)
+        # Train loop
+        pbar = tqdm(enumerate(range(num_epochs)))
+        for idx, epoch in pbar:
+            opt.zero_grad()
+            loss = self.get_train_loss(**kwargs)
+            loss.backward()
+            opt.step()
+            pbar.set_description(f'Epoch {idx}, loss: {loss.item():.3f}')
+
+        # Finish
+        self.model.eval()
         
-        # 6. Backpropagation and optimization
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
+class CFGTrainer(Trainer):
+    """
+    Concrete class that trains model with classifier free guidance
+    """
+    def __init__(self, 
+                 path: GaussianConditionalProbabilityPath, 
+                 model: ConditionalVectorField, 
+                 eta: float, **kwargs):
+        assert eta > 0 and eta < 1
+        super().__init__(model, **kwargs)
+        self.eta = eta
+        self.path = path
+
+    def get_train_loss(self, batch_size: int) -> torch.Tensor:
         
-        return loss.item()
-    
-    def train(self, train_loader):
-        # train loop
-        
+        # Step 1: Sample z,y from p_data
+        z, y = self.path.p_data.sample(batch_size)
+        """
+        z - [B, C, H, W]
+        y - [B, LabelDim=1]
+        """
+                
+        # Step 2: Set each label to 10 (i.e., null) with probability eta
+        eps = torch.rand(batch_size, device=z.device) # eps ~ U[0,1] / thres eta (0.1)
+        y[eps < self.eta] = 10
+
+        # Step 3: Sample t and x
+        t = torch.rand(batch_size,1,1,1, device=z.device) # [B,1,1,1]
+        x = self.path.sample_conditional_path(z, t) # [B,C,H,W] : conditional path
+
+        # Step 4: Regress and output loss
+        output = self.model(x, t, y)
+        target = self.path.conditional_vector_field(x, z, t)          # [B,C,H,W]        
+        loss = flow_matching_loss(predicted_vf=output, target_vf=target)
+        return loss        
+
+def main():
+    pass
+
+if __name__=="__main__":
+    main()
