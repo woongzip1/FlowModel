@@ -1,0 +1,48 @@
+
+seed: 42
+
+# WANDB
+wandb:
+  project_name: "Flow Matching"
+  entity: "woongzip1"
+  run_name: "run0"
+  notes: "First training"
+
+# DATALOADER
+dataloader:
+  batch_size: 16
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: True
+  pin_memory: True
+
+# DATASET
+dataset:
+  ratio: 1
+  validation_reduce_step: 3
+  common:
+    num_samples: 38400 
+    sr: 24000
+    multiples: 256
+  train:
+    tsv_path: "./data/libri-train.txt"
+  val:
+    tsv_path: "./data/libri-val.txt"
+  test:
+    tsv_path: "./data/libri-test.txt"
+
+path:
+  p_simple_shape: [16, 1, 38400]
+
+model:
+  blck_channels: [64, 128, 256, 512, 1024]
+  weight_norm: true
+
+optimizer:
+  learning_rate: 1.0e-4
+
+train:
+  num_epochs: 200
+  ckpt_save_dir: ./ckpts/
+  ckpt_load_path: ./ckpts/temp.pth
+  # eta: 0.5

@@ -10,6 +10,7 @@ from typing import List, Tuple, Optional
 from torch.func import vmap, jacrev
 from abc import ABC, abstractmethod
 
+
 class OldSampleable(ABC):
     """
     Distribution which can be sampled from
@@ -244,7 +245,7 @@ class IsotropicGaussian(nn.Module, Sampleable):
         # self.dummy = nn.parameter.Buffer(torch.zeros(1)) # Will automatically be moved when self.to(...) is called...
         
     def sample(self, num_samples) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self.std * torch.randn(num_samples, *self.shape).to(self.dummy.device), None
+        return self.std * torch.randn(num_samples, *self.shape).to(self.dummy.device)
 
 class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
     def __init__(self, p_data: Sampleable, p_simple_shape: List[int], alpha: Alpha, beta: Beta):
@@ -305,3 +306,85 @@ class GaussianConditionalProbabilityPath(ConditionalProbabilityPath):
         alpha_t = self.alpha(t)
         beta_t = self.beta(t)
         return (z * alpha_t - x) / beta_t ** 2
+
+class DataLoaderConditionalProbabilityPath(ConditionalProbabilityPath):
+    def __init__(self, p_simple_shape: List[int], alpha: Alpha, beta: Beta):
+        p_simple = IsotropicGaussian(shape = p_simple_shape, std = 1.0)
+        super().__init__(p_simple, p_data=None)
+        self.alpha = alpha
+        self.beta = beta
+
+    def sample_conditioning_variable(self, num_samples: int) -> torch.Tensor:
+        """
+        Samples the conditioning variable z and label y
+        Args:
+            - num_samples: the number of samples
+        Returns:
+            - z: (num_samples, c, h, w)
+            - y: (num_samples, label_dim)
+        """
+        raise NotImplementedError
+        # return self.p_data.sample(num_samples)
+    
+    def sample_conditional_path(self, z: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """
+        Samples from the conditional distribution p_t(x|z)
+        Args:
+            - z: conditioning variable (num_samples, c, h, w)
+            - t: time (num_samples, 1, 1, 1)
+        Returns:
+            - x: samples from p_t(x|z), (num_samples, c, h, w)
+        """
+        return self.alpha(t) * z + self.beta(t) * torch.randn_like(z)
+        
+    def conditional_vector_field(self, x: torch.Tensor, z: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """
+        Evaluates the conditional vector field u_t(x|z)
+        Args:
+            - x: position variable (num_samples, c, h, w)
+            - z: conditioning variable (num_samples, c, h, w)
+            - t: time (num_samples, 1, 1, 1)
+        Returns:
+            - conditional_vector_field: conditional vector field (num_samples, c, h, w)
+        """ 
+        alpha_t = self.alpha(t) # (num_samples, 1, 1, 1)
+        beta_t = self.beta(t) # (num_samples, 1, 1, 1)
+        dt_alpha_t = self.alpha.dt(t) # (num_samples, 1, 1, 1)
+        dt_beta_t = self.beta.dt(t) # (num_samples, 1, 1, 1)
+
+        return (dt_alpha_t - dt_beta_t / beta_t * alpha_t) * z + dt_beta_t / beta_t * x
+
+    def conditional_score(self, x: torch.Tensor, z: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """
+        Evaluates the conditional score of p_t(x|z)
+        Args:
+            - x: position variable (num_samples, c, h, w)
+            - z: conditioning variable (num_samples, c, h, w)
+            - t: time (num_samples, 1, 1, 1)
+        Returns:
+            - conditional_score: conditional score (num_samples, c, h, w)
+        """ 
+        alpha_t = self.alpha(t)
+        beta_t = self.beta(t)
+        return (z * alpha_t - x) / beta_t ** 2
+    
+
+
+class ConditionalVectorFieldModel(nn.Module, ABC):
+    """
+    Base class for DNN-based VF model
+    MLP-parameterization of the learned vector field u_t^theta(x)
+    """
+
+    @abstractmethod
+    def forward(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor):
+        """
+        Args:
+        - x: (bs, c, h, w)
+        - t: (bs, 1, 1, 1)
+        - y: (bs,)
+        Returns:
+        - u_t^theta(x|y): (bs, c, h, w)
+        """
+        pass
+    
