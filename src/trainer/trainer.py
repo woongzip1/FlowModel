@@ -271,7 +271,6 @@ class WaveTrainer(Trainer):
         """
         
         # Sample t and x
-        
         t = torch.rand([batch_size, 1, 1], device=z.device) # [B,1,1]
         x = self.path.sample_conditional_path(z, t) # [B,C,H,W] : conditional path
 
@@ -280,6 +279,59 @@ class WaveTrainer(Trainer):
         target = self.path.conditional_vector_field(x, z, t)          # [B,C,H,W]        
         loss = flow_matching_loss(predicted_vf=output, target_vf=target)
         return loss   
+
+class CFGWaveTrainer(WaveTrainer):
+    """
+    Concrete class that trains model
+    """
+    def __init__(self, eta: float, **kwargs):
+        assert eta > 0 and eta < 1
+        super().__init__(**kwargs)
+        self.eta = eta
+        
+    def get_train_loss(self, batch_data: dict, device:torch.device, **kwargs) -> torch.Tensor:
+        """
+        Single batch loss
+        - batch_data
+        - device
+        
+        Returns:
+            - torch.Tensor
+        """
+        #### 여기 input 에 batch 를 input으로 주고
+        #### batch 에서 x,y 를 추출하고 model forward 하고 loss return 하도록 함
+        #### base class 에서는 loss 를 aggregate 하고 train 함수에서 전체 training loop 에서 돌아가도록 설계하면 될 듯
+        
+        # Step 1: Sample z,y from p_data
+        z = batch_data['hr'].to(device)
+        y = batch_data['lr_wave'].to(device)
+        batch_size = z.shape[0]
+        
+        # eta (masking)
+        xi = torch.rand(batch_size).to(y.device)
+        y[xi < self.eta] = 0
+        
+        """
+        z - [B, C, T]
+        y - [B, C, T]
+        
+        
+        x - [B,C,T]
+        z - [B,C,T]
+        t - [B,1]
+        """
+        
+        # Sample t and x
+        t = torch.rand([batch_size, 1, 1], device=z.device) # [B,1,1]
+        x = self.path.sample_conditional_path(z, t) # [B,C,H,W] : conditional path
+
+        # Regress and output loss
+        output = self.model(x, t, y)
+        target = self.path.conditional_vector_field(x, z, t)          # [B,C,H,W]        
+        loss = flow_matching_loss(predicted_vf=output, target_vf=target)
+        return loss   
+        
+        
 
 def main():
     from src.utils.utils import load_config

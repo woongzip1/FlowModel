@@ -3,6 +3,7 @@
 import torch
 from tqdm import tqdm
 from abc import ABC, abstractmethod
+from src.flow.path import ConditionalVectorFieldModel
 
 class ODE(ABC):
     @abstractmethod
@@ -119,3 +120,23 @@ def record_every(num_timesteps: int, record_every: int) -> torch.Tensor:
         ]
     )
     
+class VectorFieldODE(ODE):
+    def __init__(self, net:ConditionalVectorFieldModel) -> None:
+        super().__init__()
+        self.net = net
+        
+    def drift_coefficient(self, xt: torch.Tensor, t: torch.Tensor, y: torch.Tensor, **kwargs) -> torch.Tensor:
+        return self.net(xt, t, y)
+    
+class CFGVectorFieldODE(ODE):
+    def __init__(self, net:ConditionalVectorFieldModel, guidance_scale: float = 1.0) -> None:
+        super().__init__()
+        self.net = net
+        self.guidance_scale = guidance_scale
+        
+    def drift_coefficient(self, xt: torch.Tensor, t: torch.Tensor, y: torch.Tensor, **kwargs) -> torch.Tensor:
+        guided_vector_field = self.net(xt, t, y)
+        unguided_y = torch.zeros_like(y)
+        unguided_vector_field = self.net(xt, t, unguided_y)
+        
+        return (1-self.guidance_scale) * unguided_vector_field + self.guidance_scale * guided_vector_field

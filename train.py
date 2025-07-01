@@ -14,7 +14,7 @@ from box import Box
 from data.dataset import prepare_dataloader # Using the dataloader function from your core logic
 from src.models.seanet import GeneratorSeanet # The model from your core logic
 from src.flow.path import DataLoaderConditionalProbabilityPath, LinearAlpha, LinearBeta # The path components
-from src.trainer.trainer import WaveTrainer # Your refactored WaveTrainer
+from src.trainer.trainer import WaveTrainer, CFGWaveTrainer # Your refactored WaveTrainer
 from src.utils.utils import print_config  # Assuming you have a print_config utility
 
 # --- Global Constants ---
@@ -75,13 +75,20 @@ def main():
     model = GeneratorSeanet(**config.model)
 
     # The optimizer is created inside the WaveTrainer
-    trainer = WaveTrainer(
+    # trainer = WaveTrainer(
+    #     path=path,
+    #     model=model,
+    #     dataloader=train_loader,
+    #     # eta=config.train.eta,
+    # )
+
+    trainer = CFGWaveTrainer(
         path=path,
         model=model,
         dataloader=train_loader,
-        # eta=config.train.eta,
+        eta=0.1,
     )
-
+    
     # # --- (Optional) Load Checkpoint ---
     # if config.train.get('ckpt_path'):
     #     print(f"INFO: Loading checkpoint from {config.train.ckpt_path}")
