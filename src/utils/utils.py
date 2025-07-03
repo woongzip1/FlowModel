@@ -146,3 +146,37 @@ def print_config(config, indent=0):
         else:
             print(" " * indent + f"{k}: {v}")
             
+## ---- Metrics adopted from AP-BWE ---- ####
+def log_spectral_distance(ref_audio, syn_audio):
+    spec_pred = torch.log10(stft(syn_audio)[0].square().clamp(1e-8)) 
+    spec_ref = torch.log10(stft(ref_audio)[0].square().clamp(1e-8)) 
+    lsd = (spec_pred - spec_ref).square().mean(dim=1).sqrt().mean()
+    return lsd
+
+def lsd_high(ref_audio, syn_audio, cutoff_freq, n_fft=2048, hop_length=512, sr=24000):
+    """Calculates the Log-Spectral Distance for the high-frequency components."""
+    # Perform STFT and get the log-magnitude spectrograms
+    # The [0] index is used to get the magnitude from stft's output tuple.
+    spec_pred = torch.log10(stft(syn_audio, n_fft, hop_length)[0].square().clamp(1e-8))
+    spec_ref = torch.log10(stft(ref_audio, n_fft, hop_length)[0].square().clamp(1e-8))
+
+    # Convert cutoff frequency in Hz to the corresponding frequency bin index
+    # The frequency of the k-th bin is k * (sr / n_fft)
+    # So, the index k is cutoff_freq * n_fft / sr
+    
+    cutoff_bin = int(cutoff_freq * n_fft / sr)
+
+    # Slice the spectrograms to keep only the high-frequency parts
+    spec_pred_hf = spec_pred[cutoff_bin:, :]
+    spec_ref_hf = spec_ref[cutoff_bin:, :]
+
+    # Calculate LSD on the high-frequency components
+    lsd = (spec_pred_hf - spec_ref_hf).square().mean(dim=1).sqrt().mean()
+    return lsd
+
+def stft(audio, n_fft=2048, hop_length=512):
+    hann_window = torch.hann_window(n_fft).to(audio.device)
+    stft_spec = torch.stft(audio, n_fft, hop_length, window=hann_window, return_complex=True)
+    stft_mag = torch.abs(stft_spec)
+    stft_pha = torch.angle(stft_spec)
+    return stft_mag, stft_pha

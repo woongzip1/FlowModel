@@ -106,7 +106,7 @@ class CFGTrainer(Trainer):
         output = self.model(x, t, y)
         target = self.path.conditional_vector_field(x, z, t)          # [B,C,H,W]        
         loss = flow_matching_loss(predicted_vf=output, target_vf=target)
-        return loss        
+        return loss
     
 class WaveTrainer(Trainer):
     """

@@ -155,7 +155,75 @@ class LinearBeta(Beta):
             - d/dt alpha_t (num_samples, 1, 1, 1)
         """ 
         return - torch.ones_like(t)
-    
+
+
+
+class SigmaScheduler(ABC):
+    """ Alpha / Beta without strict definition """    
+    def __init__(self, beta_0: float = 1.0, beta_1: float = 0.0):
+        self.beta_0 = beta_0
+        self.beta_1 = beta_1
+        
+        # Check beta_0 \sim 1
+        assert torch.allclose(
+            self(torch.zeros(1)), torch.tensor(self.beta_0)
+        )
+        
+        # Check beta_1 \sim 0
+        assert torch.allclose(
+            self(torch.ones(1)), torch.tensor(self.beta_1)
+        )
+        
+    @abstractmethod
+    def __call__(self, t: torch.Tensor) -> torch.Tensor:
+        """
+        Evaluates alpha_t. Should satisfy: self(0.0) = 1.0, self(1.0) = 0.0.
+        Args:
+            - t: time (num_samples, 1, 1, 1)
+        Returns:
+            - beta_t (num_samples, 1, 1, 1)
+        """ 
+        pass 
+
+    def dt(self, t: torch.Tensor) -> torch.Tensor:
+        """
+        Evaluates d/dt beta_t.
+        Args:
+            - t: time (num_samples, 1, 1, 1)
+        Returns:
+            - d/dt beta_t (num_samples, 1, 1, 1)
+        """ 
+        t = t.unsqueeze(1)
+        dt = vmap(jacrev(self))(t)
+        return dt.view(-1, 1, 1, 1)
+
+class LinearSigmaBeta(SigmaScheduler):
+    def __init__(self, sigma:float = 1e-4):
+        self.sigma = sigma
+        super().__init__(beta_0=1.0, beta_1=self.sigma)
+
+    """
+    Implements beta_t = 1-t
+    """
+    def __call__(self, t: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            - t: time (num_samples, 1)
+        Returns:
+            - beta_t (num_samples, 1)
+        """ 
+        return 1 - t + self.sigma * t
+        
+    def dt(self, t: torch.Tensor) -> torch.Tensor:
+        """
+        Evaluates d/dt alpha_t.
+        Args:
+            - t: time (num_samples, 1, 1, 1)
+        Returns:
+            - d/dt alpha_t (num_samples, 1, 1, 1)
+        """ 
+        return - torch.ones_like(t) + self.sigma
+
 class ConditionalProbabilityPath(nn.Module, ABC):
     """
     Abstract base class for conditional probability paths

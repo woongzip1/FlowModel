@@ -5,4 +5,5 @@
 ckpts*/
 notebooks/
 
-
+configs/*.yaml
+! configs/config_template.yaml
