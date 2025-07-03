@@ -42,7 +42,6 @@ optimizer:
   learning_rate: 1.0e-4
 
 train:
-  num_epochs: 200
+  num_epochs: 50
   ckpt_save_dir: ./ckpts_cfg/
   ckpt_load_path: null
-  # eta: 0.5

@@ -1,6 +1,6 @@
 *__pycache__/
 *.txt
-*_*.py
+# *_*.py
 
 ckpts*/
 notebooks/

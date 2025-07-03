@@ -174,7 +174,7 @@ class WaveTrainer(Trainer):
         self.start_epoch = checkpoint['epoch'] + 1
         self.best_loss = checkpoint.get('best_loss', float('inf')) # Handle older checkpoints
         
-        print(f"Checkpoint loaded successfully from {ckpt_path}. Resuming from epoch {self.start_epoch}.")
+        print(f"Checkpoint loaded successfully from {ckpt_path}. Resuming from end of epoch {self.start_epoch}.")
         
     @staticmethod
     def load_model_params(model, ckpt_path, device='cuda'):
@@ -208,7 +208,7 @@ class WaveTrainer(Trainer):
         print(f"--- Starting training from epoch {self.start_epoch + 1} ---")
 
         # Train loop
-        for epoch_idx in range(num_epochs):
+        for epoch_idx in range(self.start_epoch, num_epochs+1):
             epoch_pbar = tqdm(self.dataloader, desc=f'⚙ Epoch {epoch_idx+1}/{num_epochs}',
                               dynamic_ncols=True, leave=True)
             total_epoch_loss = 0.0
@@ -226,7 +226,7 @@ class WaveTrainer(Trainer):
             
             # --- End of Epoch ---
             avg_epoch_loss = total_epoch_loss / len(self.dataloader)
-            print(f'Epoch {epoch_idx + 1} completed. Average Loss: {avg_epoch_loss:.6f}')
+            print(f'Epoch {epoch_idx} completed. Average Loss: {avg_epoch_loss:.6f}')
             
             # Check if the current model is the best
             is_best = avg_epoch_loss < self.best_loss
@@ -309,12 +309,12 @@ class CFGWaveTrainer(WaveTrainer):
         
         # eta (masking)
         xi = torch.rand(batch_size).to(y.device)
-        y[xi < self.eta] = 0
+        # y[xi < self.eta] = 0 # null token
+        y[xi < self.eta] = -10.0 # null token
         
         """
         z - [B, C, T]
         y - [B, C, T]
-        
         
         x - [B,C,T]
         z - [B,C,T]

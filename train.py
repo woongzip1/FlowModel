@@ -76,28 +76,21 @@ def main():
     # Initialize the Model
     model = GeneratorSeanet(**config.model)
 
-    # The optimizer is created inside the WaveTrainer
-    trainer = WaveTrainer(
-        path=path,
-        model=model,
-        dataloader=train_loader,
-        # eta=config.train.eta,
-    )
-
-    # trainer = CFGWaveTrainer(
+    # # The optimizer is created inside the WaveTrainer
+    # trainer = WaveTrainer(
     #     path=path,
     #     model=model,
     #     dataloader=train_loader,
-    #     eta=0.1,
     # )
-    
-    # # --- (Optional) Load Checkpoint ---
-    # if config.train.get('ckpt_path'):
-    #     print(f"INFO: Loading checkpoint from {config.train.ckpt_path}")
-    #     # You would need to implement a 'load_checkpoint' method in your WaveTrainer
-    #     # trainer.load_checkpoint(config.train.ckpt_path)
 
-    # --- 4. Start Training ---
+    trainer = CFGWaveTrainer(
+        path=path,
+        model=model,
+        dataloader=train_loader,
+        eta=0.1,
+    )
+
+    # --- Start Training ---
     print("INFO: Starting training...")
     trainer.train(
         num_epochs=config.train.num_epochs,

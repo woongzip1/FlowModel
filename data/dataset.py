@@ -51,7 +51,7 @@ def prepare_dataloader(config):
     train_loader = DataLoader(train_dataset, shuffle=True, **dl_args)
     val_loader_args = config.dataloader
     val_loader_args['worker_init_fn'] = _worker_init_fn
-    # val_loader_args.batch_size = 1
+    val_loader_args.batch_size = 1
     val_loader = DataLoader(val_dataset, shuffle=False, **val_loader_args)
 
     return train_loader, val_loader
@@ -113,7 +113,7 @@ class Dataset(torch.utils.data.Dataset):
                 s = np.random.randint(0, current_signal_len-target_signal_len)
                 y = y[..., s:s+target_signal_len]
         elif self.mode in ['val']:
-            y = self._ensure(y, 40000, repeat=False)
+            # y = self._ensure(y, 40000, repeat=False)
             y = self._pad(y, self.N)
         else:
             sys.exit(f"unsupported mode! (train/val)") 
