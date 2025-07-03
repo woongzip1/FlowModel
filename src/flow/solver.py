@@ -136,7 +136,8 @@ class CFGVectorFieldODE(ODE):
         
     def drift_coefficient(self, xt: torch.Tensor, t: torch.Tensor, y: torch.Tensor, **kwargs) -> torch.Tensor:
         guided_vector_field = self.net(xt, t, y)
-        unguided_y = torch.zeros_like(y)
+        # unguided_y = torch.zeros_like(y)
+        unguided_y = torch.ones_like(y) * (-10)
         unguided_vector_field = self.net(xt, t, unguided_y)
         
         return (1-self.guidance_scale) * unguided_vector_field + self.guidance_scale * guided_vector_field
