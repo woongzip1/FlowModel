@@ -280,6 +280,54 @@ class WaveTrainer(Trainer):
         loss = flow_matching_loss(predicted_vf=output, target_vf=target)
         return loss   
 
+class WaveTrainerWithPrior(WaveTrainer):
+    """
+    Concrete class that trains model
+    """
+    def __init__(self, 
+                 **kwargs):
+        super().__init__(**kwargs)
+
+    def get_train_loss(self, batch_data: dict, device:torch.device, **kwargs) -> torch.Tensor:
+        """
+        Single batch loss
+        - batch_data
+        - device
+        
+        Returns:
+            - torch.Tensor
+        """
+        #### 여기 input 에 batch 를 input으로 주고
+        #### batch 에서 x,y 를 추출하고 model forward 하고 loss return 하도록 함
+        #### base class 에서는 loss 를 aggregate 하고 train 함수에서 전체 training loop 에서 돌아가도록 설계하면 될 듯
+        
+        # Step 1: Sample z,y from p_data
+        z = batch_data['hr'].to(device)
+        y = batch_data['lr_wave'].to(device)
+        batch_size = z.shape[0]
+        
+        """
+        z - [B, C, H, W]
+        y - [B, LabelDim=1]
+        
+        
+        x - [B,C,T]
+        z - [B,C,T]
+        t - [B,1]
+        """
+        
+        # Sample t, y and x
+        t = torch.rand([batch_size, 1, 1], device=z.device) # [B,1,1]
+        x, x0 = self.path.sample_conditional_path(z, t, y) # [B,C,H,W] : conditional path
+
+        # Regress and output loss
+        output = self.model(x, t, y)
+        # output = self.model(x, t, None)
+        
+        target = self.path.conditional_vector_field(z, x0)          # [B,C,H,W]        
+        loss = flow_matching_loss(predicted_vf=output, target_vf=target)
+        return loss   
+
 class CFGWaveTrainer(WaveTrainer):
     """
     Concrete class that trains model

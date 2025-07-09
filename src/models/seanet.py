@@ -67,6 +67,7 @@ class SinusoidalTimeEmbedding(nn.Module):
 class GeneratorSeanet(ConditionalVectorFieldModel):
     def __init__(
         self,
+        in_channels = 2,
         block_nbr: int = 4,
         blck_channels: tuple = (32, 64, 128, 256, 512),
         blck_strides: tuple = (2, 2, 8, 8),
@@ -97,7 +98,7 @@ class GeneratorSeanet(ConditionalVectorFieldModel):
         self.time_embedder = SinusoidalTimeEmbedding(dim=t_embed_dim, mode='learnable')
 
         self.first_conv = nn.Conv1d(
-            in_channels=2,
+            in_channels=in_channels,
             out_channels=blck_channels[0],
             kernel_size=7,
             padding="same",
@@ -175,8 +176,8 @@ class GeneratorSeanet(ConditionalVectorFieldModel):
         Returns:
             (torch.Tensor): enhanced speech signal [B,C,T]
         """
-
-        noisy_speech = torch.cat([noisy_speech, lr_speech], dim=1) # [B,C,T]
+        if lr_speech is not None:
+            noisy_speech = torch.cat([noisy_speech, lr_speech], dim=1) # [B,C,T]
         x = self.first_conv(noisy_speech)
         encoder_outputs = [x]
 
@@ -193,7 +194,9 @@ class GeneratorSeanet(ConditionalVectorFieldModel):
 
         x = x + encoder_outputs[0]
         x = self.last_conv(x)
-        x = x + lr_speech
+        
+        if lr_speech is not None:
+            x = x + lr_speech
         # x = torch.tanh(x + noisy_speech)
 
         return x

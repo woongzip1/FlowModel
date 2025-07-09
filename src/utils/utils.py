@@ -50,7 +50,7 @@ def _worker_init_fn(worker_id):
 
 ## Visualize data
 def draw_spec(x,
-              figsize=(10, 6), title='', n_fft=2048,
+              figsize=(7,4), title='', n_fft=2048,
               win_len=1024, hop_len=256, sr=16000, cmap='inferno',
               window='hann',
               vmin=-50, vmax=40, use_colorbar=False,
@@ -81,7 +81,8 @@ def draw_spec(x,
     plt.ylim(*ylim)
 
     plt.title(title, fontsize=title_fontsize)
-    
+    plt.tight_layout()
+
     if save_fig and save_path:
         plt.savefig(f"{save_path}.png")
     
@@ -117,8 +118,9 @@ def draw_2d_heatmap(spectrum: torch.tensor, cmap='inferno', vmin=None, vmax=None
         cbar = plt.colorbar(im)
         formatter = FuncFormatter(lambda x, pos: f'{x:3.1f}')
         cbar.ax.yaxis.set_major_formatter(formatter)
-    plt.xlabel('Frame')
-    plt.ylabel('Frequency')
+    plt.xlabel('Frame', fontsize=8)
+    plt.ylabel('Frequency', fontsize=8)
+
     if ylim:
         plt.ylim(ylim)
     plt.tight_layout()

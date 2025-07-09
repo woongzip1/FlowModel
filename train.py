@@ -13,8 +13,8 @@ from box import Box
 # --- Assumed project structure for imports ---
 from data.dataset import prepare_dataloader # Using the dataloader function from your core logic
 from src.models.seanet import GeneratorSeanet # The model from your core logic
-from src.flow.path import DataLoaderConditionalProbabilityPath, LinearAlpha, LinearBeta, LinearSigmaBeta
-from src.trainer.trainer import WaveTrainer, CFGWaveTrainer # Your refactored WaveTrainer
+from src.flow.path import DataLoaderConditionalProbabilityPath, DataLoaderConditionalProbabilityPathWithPrior, LinearAlpha, LinearBeta, LinearSigmaBeta
+from src.trainer.trainer import WaveTrainer, CFGWaveTrainer, WaveTrainerWithPrior
 from src.utils.utils import print_config  # Assuming you have a print_config utility
 
 # --- Global Constants ---
@@ -67,15 +67,13 @@ def main():
     # beta = LinearBeta()
     beta = LinearSigmaBeta(sigma=1e-4)
     
-    path = DataLoaderConditionalProbabilityPath(
-        p_simple_shape=config.path.p_simple_shape, # e.g., [16, 1, 38400]
-        alpha=alpha,
-        beta=beta,
-    )
-
-    # Initialize the Model
-    model = GeneratorSeanet(**config.model)
-
+    # # Initialize the Model
+    # model = GeneratorSeanet(**config.model)
+    # path = DataLoaderConditionalProbabilityPath(
+    #     p_simple_shape=config.path.p_simple_shape, # e.g., [16, 1, 38400]
+    #     alpha=alpha,
+    #     beta=beta,
+    # )
     # # The optimizer is created inside the WaveTrainer
     # trainer = WaveTrainer(
     #     path=path,
@@ -83,11 +81,26 @@ def main():
     #     dataloader=train_loader,
     # )
 
-    trainer = CFGWaveTrainer(
+    ## ---
+    # trainer = CFGWaveTrainer(
+    #     path=path,
+    #     model=model,
+    #     dataloader=train_loader,
+    #     eta=0.1,
+    # )   
+    ## --- 
+        
+    # Prior
+    model = GeneratorSeanet(**config.model)
+    path = DataLoaderConditionalProbabilityPathWithPrior(
+        p_simple_shape=config.path.p_simple_shape, # e.g., [16, 1, 38400]
+        alpha=alpha,
+        beta=beta,
+    )
+    trainer = WaveTrainerWithPrior(
         path=path,
         model=model,
         dataloader=train_loader,
-        eta=0.1,
     )
 
     # --- Start Training ---

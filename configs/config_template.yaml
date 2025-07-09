@@ -46,3 +46,6 @@ train:
   ckpt_save_dir: ./ckpts/
   ckpt_load_path: ./ckpts/temp.pth
   # eta: 0.5
+
+inference:
+  dir_speech: "./inference/nosigma"

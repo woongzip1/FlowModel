@@ -7,3 +7,6 @@ notebooks/
 
 configs/*.yaml
 ! configs/config_template.yaml
+
+inference/
+*.sh

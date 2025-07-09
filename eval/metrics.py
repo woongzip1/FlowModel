@@ -32,20 +32,34 @@ from src.utils.utils import plot_signals
 ## dataset
 ## main utils
 
+def set_seed(seed=42):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+def load_model_params(model, checkpoint_path, device='cuda'):
+    model = model.to(device)
+    print(f"Loading '{checkpoint_path}...'")
+    ckpt = torch.load(checkpoint_path)
+    # import pdb
+    model.load_state_dict(ckpt['model_state_dict'], strict=False)
+    
+    print(f"Model loaded from {checkpoint_path}")
+    return model
+
 def setup_model_and_solver(config, ckpt_path, device):
     """
     Initializes the model, ODE solver, and probability path.
     """
     # Load the model
     model = GeneratorSeanet(**config['model']).to(device)
-    model.load_state_dict(torch.load(ckpt_path, map_location=device)['model'])
+    model.load_state_dict(torch.load(ckpt_path, map_location=device)['model_state_dict'])
     model.eval()
 
     # Setup the probability path for defining the ODE
     alpha = LinearAlpha()
     beta = LinearBeta()
     gaussian_path = DataLoaderConditionalProbabilityPath(
-        p_simple_shape=[1, config['audio']['segment_length']], # Use segment length from config
+        p_simple_shape=[1, config['dataset']['common']['num_samples']], # Use segment length from config
         alpha=alpha,
         beta=beta,
     ).to(device)
@@ -73,7 +87,9 @@ def run_ode_inference(solver, gaussian_path, lr_audio, num_timesteps=50, device=
     # The shape should match the target high-resolution audio.
     # Here we assume the target length is known from config.
     # Note: If your model upsamples, the noise shape should match the final output shape.
-    x0 = gaussian_path.p_simple.sample(1).to(device)
+    
+    # x0 = gaussian_path.p_simple.sample(1).to(device)
+    x0 = torch.randn_like(condition_y).to(device)
 
     # 2. Define the integration timesteps from t=0 to t=1
     ts = torch.linspace(0, 1, num_timesteps).view(1, -1, 1, 1).expand(x0.shape[0], -1, 1, 1).to(device)
@@ -85,22 +101,7 @@ def run_ode_inference(solver, gaussian_path, lr_audio, num_timesteps=50, device=
     # Return the final generated audio, remove batch and channel dims for saving
     return generated_audio.squeeze(0).squeeze(0).cpu()
 
-
-def set_seed(seed=42):
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-
-def load_model_params(model, checkpoint_path, device='cuda'):
-    model = model.to(device)
-    print(f"Loading '{checkpoint_path}...'")
-    ckpt = torch.load(checkpoint_path)
-    # import pdb
-    model.load_state_dict(ckpt['generator'], strict=False)
-    
-    print(f"Model loaded from {checkpoint_path}")
-    return model
-
-def inference_single_file(config, ckpt_path, idx_to_test=0, num_timesteps=50, device='cuda'):
+def inference_single_file(config, ckpt_path, idx_to_test=0, exp_name='ode_results', num_timesteps=50, device='cuda'):
     """
     Runs inference on a single file from the dataset for quick testing and debugging.
     """
@@ -108,13 +109,14 @@ def inference_single_file(config, ckpt_path, idx_to_test=0, num_timesteps=50, de
     
     # Setup
     model, solver, gaussian_path = setup_model_and_solver(config, ckpt_path, device)
-    val_dataset, _ = prepare_dataloader(config, get_dataset_only=True) # Get dataset object
+    _, val_loader = prepare_dataloader(config)
+    val_dataset = val_loader.dataset
     
     # Get a single data point
     outdict= val_dataset[idx_to_test]
     lr_wave = outdict['lr_wave']
     hr_wave = outdict['hr'] 
-    name = outdict['file_name']
+    name = outdict['filename']
 
     # Run inference
     print(f"Generating audio for: {name}")
@@ -123,17 +125,25 @@ def inference_single_file(config, ckpt_path, idx_to_test=0, num_timesteps=50, de
     duration = time.time() - start_time
     print(f"Inference took {duration:.2f} seconds.")
 
-    # Save the generated file
-    save_dir = os.path.join(config['inference']['dir_speech'], 'single_test')
+    save_dir = os.path.join(config['inference']['dir_speech'], exp_name)
     os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(f'{save_dir}/lr', exist_ok=True)
+    os.makedirs(f'{save_dir}/gen', exist_ok=True)
+    os.makedirs(f'{save_dir}/gt', exist_ok=True)
     
-    output_file = os.path.join(save_dir, f"{name}_generated.wav")
-    sf.write(output_file, generated_wave.numpy(), config['audio']['sampling_rate'])
+    # Save lr file
+    lr_file = os.path.join(save_dir, "lr",f"{name}.wav")
+    sf.write(lr_file, lr_wave.squeeze().numpy(), config['dataset']['common']['sr'], 'PCM_16')
+    print(f"Saved lr audio to: {lr_file}")
+
+    # Save the generated file
+    output_file = os.path.join(save_dir, "gen", f"{name}.wav")
+    sf.write(output_file, generated_wave.numpy(), config['dataset']['common']['sr'], 'PCM_16')
     print(f"Saved generated audio to: {output_file}")
 
     # Save ground truth for comparison
-    gt_file = os.path.join(save_dir, f"{name}_ground_truth.wav")
-    sf.write(gt_file, hr_wave.squeeze().numpy(), config['audio']['sampling_rate'])
+    gt_file = os.path.join(save_dir, "gt", f"{name}.wav")
+    sf.write(gt_file, hr_wave.squeeze().numpy(), config['dataset']['common']['sr'], 'PCM_16')
     print(f"Saved ground truth audio to: {gt_file}")
     
 def inference_full_dataset(config, ckpt_path, exp_name='ode_results', num_timesteps=50, device='cuda'):
@@ -151,7 +161,8 @@ def inference_full_dataset(config, ckpt_path, exp_name='ode_results', num_timest
     # Prepare save directories
     save_base_dir = os.path.join(config['inference']['dir_speech'], exp_name)
     save_gen_dir = os.path.join(save_base_dir, 'generated')
-    save_gt_dir = os.path.join(save_base_dir, 'ground_truth')
+    save_lr_dir = os.path.join(save_base_dir, 'lr')
+    save_gt_dir = os.path.join(save_base_dir, 'gt')
     os.makedirs(save_gen_dir, exist_ok=True)
     os.makedirs(save_gt_dir, exist_ok=True)
     
@@ -169,13 +180,17 @@ def inference_full_dataset(config, ckpt_path, exp_name='ode_results', num_timest
         generated_wave = run_ode_inference(solver, gaussian_path, lr_wave, num_timesteps, device)
         total_duration += time.time() - start_time
 
+        # Save lr file
+        lr_file = os.path.join(save_lr_dir, f"{filename}.wav")
+        sf.write(lr_file, lr_wave.numpy(), config['dataset']['common']['sr'])
+        
         # Save generated file
         output_file = os.path.join(save_gen_dir, f"{filename}.wav")
-        sf.write(output_file, generated_wave.numpy(), config['audio']['sampling_rate'])
+        sf.write(output_file, generated_wave.numpy(), config['dataset']['common']['sr'])
         
         # Save ground truth file
         gt_file = os.path.join(save_gt_dir, f"{filename}.wav")
-        sf.write(gt_file, hr_wave.squeeze().numpy(), config['audio']['sampling_rate'])
+        sf.write(gt_file, hr_wave.squeeze().numpy(), config['dataset']['common']['sr'])
 
     avg_duration = total_duration / len(val_loader)
     print("\n--- Inference Complete ---")
@@ -246,11 +261,16 @@ def main():
     
     args = parser.parse_args()
 
-    ckpt_path = "./ckpts/best_model.pth"
     # DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
     DEVICE = 'cuda'
     config = load_config(args.config)
-    inference_single_file(config, ckpt_path, idx_to_test=10, num_timesteps=50, device=DEVICE)
+    # ckpt_path = "./ckpts/best_model.pth"
+    ckpt_path = os.path.join(config.train.ckpt_save_dir, "best_model.pth")
+    
+    for ode_steps in [50]:
+        # for idx_to_test in np.arange(0, 2000, 100):
+        for idx_to_test in np.arange(0, 400, 100):
+            inference_single_file(config, ckpt_path, idx_to_test=idx_to_test, num_timesteps=30, device=DEVICE, exp_name=f'{ode_steps}')
     # inference(config, device=args.device, save_gt=args.save_gt, exp_name=args.exp_name, log_term=args.log_term)
 
 if __name__ == "__main__":

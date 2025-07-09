@@ -119,7 +119,7 @@ class Dataset(torch.utils.data.Dataset):
             sys.exit(f"unsupported mode! (train/val)") 
             
         # get lr wave
-        lr = self._get_lr_wav(y,)
+        lr = self._get_lr_wav(y, target_sr=8000, orig_sr=self.sr)
         lr_spec = self._get_stft(lr)
         
         outdict = {
@@ -179,3 +179,22 @@ def main():
 
 if __name__ == "__main__":
     main()
+"""
+##### python split_vctk.py --root /home/woongzip/Dataset_48khz/GT/VCTK --out_dir ./
+##### python split_vctk.py --root /home/woongzip/dataset_real/GT/VCTK --out_dir ./
+## find /home/woongzip/dataset_real/GT/MUSDB18_split/test -name mixture*.wav > mixture.val
+
+### LibriTTS
+## find /home/woongzip/Dataset_24khz/LibriTTS/train-clean-100 /home/woongzip/Dataset_24khz/LibriTTS/train-clean-360 /home/woongzip/Dataset_24khz/LibriTTS/train-other-500 -name "*.wav" > libri-train.txt
+## find /home/woongzip/Dataset_24khz/LibriTTS/train-clean-100 /home/woongzip/Dataset_24khz/LibriTTS/train-clean-360 /home/woongzip/Dataset_24khz/LibriTTS/train-other-500 -name "*.wav" > libri-train.txt
+## find /home/woongzip/Dataset_24khz/LibriTTS/train-clean-100 /home/woongzip/Dataset_24khz/LibriTTS/train-clean-360 /home/woongzip/Dataset_24khz/LibriTTS/train-other-500 -name "*.wav" > libri-train.txt
+
+### Audio Dataset (NSynth)
+# find /home/woongzip/Dataset/nsynth-train -name "*.wav" > nsynth-train.txt
+# find /home/woongzip/Dataset/nsynth-val -name "*.wav" > nsynth-val.txt
+# find /home/woongzip/Dataset/nsynth-test -name "*.wav" > nsynth-testin.txt
+
+find /ssd/woongzip/dataset_real/GT/MUSDB18_split -name "*.wav" > audio_48.txt
+
+
+"""
