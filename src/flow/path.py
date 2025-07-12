@@ -10,7 +10,6 @@ from typing import List, Tuple, Optional
 from torch.func import vmap, jacrev
 from abc import ABC, abstractmethod
 
-
 class OldSampleable(ABC):
     """
     Distribution which can be sampled from
