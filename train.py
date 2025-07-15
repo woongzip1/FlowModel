@@ -1,5 +1,6 @@
 # train.py
 
+import pdb
 import torch
 import yaml
 import random
@@ -9,6 +10,7 @@ from datetime import datetime
 # --- WandB for logging ---
 import wandb
 from box import Box
+from torchinfo import summary
 
 # --- Assumed project structure for imports ---
 from data.dataset import prepare_dataloader # Using the dataloader function from your core logic
@@ -21,7 +23,7 @@ from src.utils.utils import print_config  # Assuming you have a print_config uti
 
 from src.utils.spectral_ops import InvertibleFeatureExtractor, AmplitudeCompressedComplexSTFT
 from src.models.convnext_unet import ConvNeXtUNet, ConditionalVectorFieldModel
-from src.flow.path_stft import ConditionalProbabilityPath, ReFlowPath, OriginalCFMPath, DataDependentPriorPath
+from src.flow.path_stft import get_path
 
 
 
@@ -71,9 +73,9 @@ def main():
 
     # --- 3. Model, Path, and Trainer Initialization ---
     print("INFO: Initializing model, path, and trainer...")
-    alpha = LinearAlpha()
+    # alpha = LinearAlpha()
     # beta = LinearBeta()
-    beta = LinearSigmaBeta(sigma=1e-4)
+    # beta = LinearSigmaBeta(sigma=1e-4)
     
     # # Initialize the Model
     # model = GeneratorSeanet(**config.model)
@@ -111,22 +113,12 @@ def main():
     #     dataloader=train_loader,
     # )
 
-    # # --- Start Training ---
-    # print("INFO: Starting training...")
-    # trainer.train(
-    #     num_epochs=config.train.num_epochs,
-    #     device=torch.device(DEVICE),
-    #     lr=config.optimizer.learning_rate,
-    #     ckpt_save_dir=config.train.ckpt_save_dir,
-    #     ckpt_load_path=config.train.get('ckpt_load_path', None),
-    # )
-
     ## STFT
     transform = AmplitudeCompressedComplexSTFT(**config.transform)
-    path = OriginalCFMPath()
+    path = get_path(config.path)
     model = ConvNeXtUNet(**config.model)
     
-    from torchinfo import summary
+    ## Dummy input
     summary(
         model,
         input_data=[torch.randn(4,2,512,65), torch.randn(4), torch.randn(4,2,512,65)],
@@ -141,6 +133,7 @@ def main():
                         dataloader=train_loader,
                         transform=transform,
                         )
+    
     # --- Start Training ---
     print("INFO: Starting training...")
     trainer.train(

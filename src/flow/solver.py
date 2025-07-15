@@ -17,31 +17,6 @@ class ODE(ABC):
             - drift_coefficient: shape (bs, c, h, w)
         """
         pass
-
-class SDE(ABC):
-    @abstractmethod
-    def drift_coefficient(self, xt: torch.Tensor, t: torch.Tensor, **kwargs) -> torch.Tensor:
-        """
-        Returns the drift coefficient of the ODE.
-        Args:
-            - xt: state at time t, shape (bs, c, h, w)
-            - t: time, shape (bs, 1, 1, 1)
-        Returns:
-            - drift_coefficient: shape (bs, c, h, w)
-        """
-        pass
-
-    @abstractmethod
-    def diffusion_coefficient(self, xt: torch.Tensor, t: torch.Tensor, **kwargs) -> torch.Tensor:
-        """
-        Returns the diffusion coefficient of the ODE.
-        Args:
-            - xt: state at time t, shape (bs, c, h, w)
-            - t: time, shape (bs, 1, 1, 1)
-        Returns:
-            - diffusion_coefficient: shape (bs, c, h, w)
-        """
-        pass
     
 class Solver(ABC):
     @abstractmethod
@@ -93,26 +68,7 @@ class Solver(ABC):
             xs.append(x.clone())
         return torch.stack(xs, dim=1)
 
-class EulerSolver(Solver):
-    def __init__(self, ode: ODE):
-        self.ode = ode
-        
-    def step(self, xt: torch.Tensor, t: torch.Tensor, h: torch.Tensor, **kwargs):
-        return xt + self.ode.drift_coefficient(xt,t, **kwargs) * h
-
-def record_every(num_timesteps: int, record_every: int) -> torch.Tensor:
-    """
-    Compute the indices to record in the trajectory given a record_every parameter
-    """
-    if record_every == 1:
-        return torch.arange(num_timesteps)
-    return torch.cat(
-        [
-            torch.arange(0, num_timesteps - 1, record_every),
-            torch.tensor([num_timesteps - 1]),
-        ]
-    )
-    
+# --- ODE
 class VectorFieldODE(ODE):
     def __init__(self, net:ConditionalVectorFieldModel) -> None:
         super().__init__()
@@ -122,6 +78,7 @@ class VectorFieldODE(ODE):
         return self.net(xt, t, y)
     
 class CFGVectorFieldODE(ODE):
+    """ For Classifier Free Guidance """
     def __init__(self, net:ConditionalVectorFieldModel, guidance_scale: float = 1.0) -> None:
         super().__init__()
         self.net = net
@@ -134,3 +91,11 @@ class CFGVectorFieldODE(ODE):
         unguided_vector_field = self.net(xt, t, unguided_y)
         
         return (1-self.guidance_scale) * unguided_vector_field + self.guidance_scale * guided_vector_field
+
+# --- Solver
+class EulerSolver(Solver):
+    def __init__(self, ode: ODE):
+        self.ode = ode
+        
+    def step(self, xt: torch.Tensor, t: torch.Tensor, h: torch.Tensor, **kwargs):
+        return xt + self.ode.drift_coefficient(xt,t, **kwargs) * h
