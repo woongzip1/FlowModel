@@ -1,0 +1,107 @@
+## regarding conditional probability path
+
+## (Alpha, Beta) or Gamma
+## ConditionalProbabilityPath
+
+import torch
+import torch.nn as nn
+
+from typing import List, Tuple, Optional
+from abc import ABC, abstractmethod
+
+class ConditionalProbabilityPath(nn.Module, ABC):
+    """
+    Abstract base class for conditional probability paths
+    """
+    def __init__(self):
+        super().__init__()
+
+    @abstractmethod
+    def sample_source(self, Z: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
+        """Returns x0 in the same format as Z/Y."""
+
+    @abstractmethod
+    def sample_xt(self, x0: torch.Tensor, Z: torch.Tensor, Y: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """Returns x_t = f(x0, x1=Z, t)."""
+
+    @abstractmethod
+    def get_target_vector_field(
+        self,
+        xt: torch.Tensor,
+        x0: torch.Tensor,
+        Z: torch.Tensor,
+        Y: torch.Tensor,
+        t: torch.Tensor
+    ) -> torch.Tensor:
+        """Returns u_t(xt|Z,Y)."""
+
+class OriginalCFMPath(ConditionalProbabilityPath):
+    def __init__(self, sigma_min:float=1e-4):
+        super().__init__()
+        self.sigma_min = sigma_min
+        
+    def sample_source(self, Z, Y):
+        # Standard Gaussian
+        # x0 ~ N(0,1)
+        return torch.randn_like(Z)
+
+    def sample_xt(self, x0, Z, Y, t):
+        return t*Z + (1 - t + self.sigma_min*t) * x0
+
+    def get_target_vector_field(self, xt, x0, Z, Y, t):
+        return Z - (1 - self.sigma_min) * x0
+    
+class ReFlowPath(ConditionalProbabilityPath):
+    def __init__(self):
+        super().__init__()
+        
+    def sample_source(self, Z, Y):
+        # Identical to Y
+        return Y
+
+    def sample_xt(self, x0, Z, Y, t):
+        return t*Z + (1-t)*x0
+
+    def get_target_vector_field(self, xt, x0, Z, Y, t):
+        return Z - x0
+    
+class DataDependentPriorPath(ConditionalProbabilityPath):
+    def __init__(self,
+        sampling_rate: int,
+        n_fft: int = 1024,
+        alpha: float = 3e-4,
+        f_c: float = 4000.0,
+        sigma_max: float = 0.5
+    ):
+        super().__init__()
+        self.sr = sampling_rate
+        self.alpha = alpha
+        self.f_c = f_c
+        self.sigma_max = sigma_max
+
+        # frequency dependent mask
+        F = n_fft // 2 # consider this is unvalid
+        freqs = torch.linspace(0, self.sr/2, F)
+        m_k = torch.sigmoid(self.alpha * (freqs - self.f_c))
+        sigma_noise = m_k * self.sigma_max
+        
+        # Masks
+        # preserve_mask = 1.0 - m_k
+        # self.register_buffer("preserve_mask", preserve_mask.view(1, 1, -1, 1)) # [1,1,F,1]
+        self.register_buffer("sigma_noise", sigma_noise.view(1, 1, -1, 1)) # [1,1,F,1]
+        
+            
+    def sample_source(self, Z, Y):
+        # x_low_freq = Y * self.preserve_mask
+        x_low_freq = Y # Y is LR spec 
+        noise = torch.randn_like(Y) * self.sigma_noise
+        x0 = x_low_freq + noise
+        return x0
+    
+    def sample_xt(self, x0, Z, Y, t):
+        return t * Z + (1-t) * x0
+    
+    def get_target_vector_field(self, xt: torch.Tensor, x0: torch.Tensor, Z: torch.Tensor, Y: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        return Z - x0
+    
+    

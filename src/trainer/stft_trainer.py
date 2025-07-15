@@ -6,12 +6,12 @@ import shutil
 
 from tqdm import tqdm
 from abc import ABC, abstractmethod
-from src.flow.path import GaussianConditionalProbabilityPath, DataLoaderConditionalProbabilityPath, LinearAlpha, LinearBeta
+
+from src.flow.path_stft import ConditionalProbabilityPath, ReFlowPath, OriginalCFMPath, DataDependentPriorPath
 from src.flow.losses import flow_matching_loss
-from src.flow.path import ConditionalVectorFieldModel
 
-from src.models.seanet import GeneratorSeanet
-
+from src.models.convnext_unet import ConvNeXtUNet, ConditionalVectorFieldModel
+from src.utils.spectral_ops import InvertibleFeatureExtractor, AmplitudeCompressedComplexSTFT
 
 ## path, unet, loss
 MiB = 1024 ** 2
@@ -74,15 +74,17 @@ class Trainer(ABC):
     
 class STFTTrainer(Trainer):
     def __init__(self,
-                 path: DataLoaderConditionalProbabilityPath,
+                 path: ConditionalProbabilityPath,
                  model: ConditionalVectorFieldModel,
+                 transform: InvertibleFeatureExtractor,
                  **kwargs):
         super().__init__(model, **kwargs)
         self.path = path
         self.optimizer = None
-        self.start_epoch = 0
+        self.start_epoch = 1
         self.best_loss = float('inf')
         self.device = None
+        self.transform = transform
         
     def save_checkpoint(self, epoch: int, is_best: bool, save_dir: str):
         """
@@ -145,7 +147,7 @@ class STFTTrainer(Trainer):
         print(f"Model loaded from {ckpt_path}")
         return model
     
-    def train(self, num_epochs: int, device: torch.device, lr: float = 1e-3, 
+    def train(self, num_epochs: int, device: torch.device, lr: float = 1e-4, 
               ckpt_save_dir: str = 'checkpoints', ckpt_load_path: str = None,
               **kwargs) -> None:
         """
@@ -165,11 +167,11 @@ class STFTTrainer(Trainer):
         if ckpt_load_path:
             self.load_checkpoint(ckpt_load_path)
         self.model.train()
-        print(f"--- Starting training from epoch {self.start_epoch + 1} ---")
+        print(f"--- Starting training from epoch {self.start_epoch} ---")
 
         # Train loop
         for epoch_idx in range(self.start_epoch, num_epochs+1):
-            epoch_pbar = tqdm(self.dataloader, desc=f'⚙ Epoch {epoch_idx+1}/{num_epochs}',
+            epoch_pbar = tqdm(self.dataloader, desc=f'⚙ Epoch {epoch_idx}/{num_epochs}',
                               dynamic_ncols=True, leave=True)
             total_epoch_loss = 0.0
             
@@ -202,6 +204,24 @@ class STFTTrainer(Trainer):
         self.model.eval()
         print('Training finished')
     
+    def _preprocess(self, waveform):
+        """ waveform: [B,C,T]
+        """
+        spec = self.transform(waveform) # [B,C,F,T]
+        real = torch.view_as_real(spec.squeeze(1)) # [B,F,T,2]
+        real = real.permute(0,3,1,2) # -> [B,2,F,T]
+        
+        return real[:,:,:-1,:]
+    
+    def _postprocess(self, spec): 
+        # [B,2,F,T]
+        spec = torch.nn.functional.pad(spec, pad=[0,0,0,1], value=0)
+        spec = spec.permute(0,2,3,1).contiguous()
+        print(spec.shape)
+        spec = torch.view_as_complex(spec)
+        waveform = self.transform.invert(spec)
+        return waveform
+    
     def get_train_loss(self, batch_data:dict, device:torch.device, **kwargs):
         """
         - batch data
@@ -212,18 +232,25 @@ class STFTTrainer(Trainer):
         """
         
         ## Sample z,y from p_data
-        z = batch_data['hr'].to(device)
+        z = batch_data['hr'].to(device) # [B,1,T] 
         y = batch_data['lr_wave'].to(device)
         batch_size = z.shape[0]
         
+        ## z,y -> Z,Y (transform)
+        Z = self._preprocess(z)
+        Y = self._preprocess(y)
+        
+        # pdb.set_trace()
         ## Sample t, y, and x
         ## Shape of z
-        t = torch.rand([batch_size, 1, 1], device=z.device)
-        x, x0 = self.path.sample_conditional_path(z, t, y)
+        t = torch.rand([batch_size, 1, 1, 1], device=z.device) # [B,1,1,1]
+        x0 = self.path.sample_source(Z, Y)
+        xt = self.path.sample_xt(x0, Z, Y, t)
         
         # output
-        output = self.model(x, t, y)
-        target = self.path.conditional_vector_field(z, x0)
+        # pdb.set_trace()
+        output = self.model(xt, t, Y)
+        target = self.path.get_target_vector_field(xt, x0, Z, Y, t)
         loss = flow_matching_loss(predicted_vf=output, target_vf=target)
         
         return loss
@@ -233,23 +260,33 @@ def main():
     from src.utils.utils import load_config
     from data.dataset import make_dataset, prepare_dataloader
     
-    config_path = 'configs/config_template.yaml'
+    config_path = 'configs/audio48.yaml'
     config = load_config(config_path)
     train_loader, val = prepare_dataloader(config)
 
-    alpha = LinearAlpha()
-    beta = LinearBeta()
-    gaussian_path = DataLoaderConditionalProbabilityPath(
-                        p_simple_shape=[16,1,38400], # [C,T] ?
-                        alpha=alpha,
-                        beta=beta,
+    transform = AmplitudeCompressedComplexSTFT(
+                                        window_fn='hann', n_fft=1024, 
+                                        sampling_rate=48000, hop_length=256,
+                                        alpha=0.3, beta=1, comp_eps=1e-4,)
+    
+    path = OriginalCFMPath()
+    model = ConvNeXtUNet(in_channels=4, out_channels=2, dims=[96,192,384,768], depths=[2,2,6,2])
+    # model = ConvNeXtUNet(in_channels=4, out_channels=2, dims=[64,128,256,512], depths=[2,2,6,2])
+    from torchinfo import summary
+    summary(
+        model,
+        input_data=[torch.randn(4,2,512,100), torch.randn(4), torch.randn(4,2,512,100)],
+        depth=4,
+        col_names=["input_size", "output_size", "num_params"],
+        verbose=1
     )
-    model = GeneratorSeanet(blck_channels=(64, 128, 256, 512, 1024), weight_norm=True)
+    
     trainer = STFTTrainer(
-                        path=gaussian_path,
+                        path=path,
                         model=model,
                         dataloader=train_loader,
-                          )
+                        transform=transform,
+                        )
     trainer.train(1, device='cuda')
 
 if __name__=="__main__":

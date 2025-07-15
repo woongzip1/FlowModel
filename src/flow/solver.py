@@ -100,13 +100,6 @@ class EulerSolver(Solver):
     def step(self, xt: torch.Tensor, t: torch.Tensor, h: torch.Tensor, **kwargs):
         return xt + self.ode.drift_coefficient(xt,t, **kwargs) * h
 
-class EulerMaruyamaSolver(Solver):
-    def __init__(self, sde: SDE):
-        self.sde = sde
-        
-    def step(self, xt: torch.Tensor, t: torch.Tensor, h: torch.Tensor, **kwargs):
-        return xt + self.sde.drift_coefficient(xt,t, **kwargs) * h + self.sde.diffusion_coefficient(xt,t, **kwargs) * torch.sqrt(h) * torch.randn_like(xt)
-
 def record_every(num_timesteps: int, record_every: int) -> torch.Tensor:
     """
     Compute the indices to record in the trajectory given a record_every parameter

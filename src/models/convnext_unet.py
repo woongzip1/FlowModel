@@ -6,14 +6,14 @@ import torch.nn.functional as F
 from abc import ABC, abstractmethod
 from timm.models.layers import DropPath 
 
-class ConditionalVectorField(nn.Module, ABC):
+class ConditionalVectorFieldModel(nn.Module, ABC):
     """
     Base class for DNN-based VF model
     MLP-parameterization of the learned vector field u_t^theta(x)
     """
 
     @abstractmethod
-    def forward(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor):
+    def forward(self, x:torch.Tensor, t:torch.Tensor, y:torch.Tensor):
         """
         Args:
         - x: (bs, c, h, w)
@@ -206,7 +206,7 @@ class DecoderBlock(nn.Module):
             x = block(x, t_emb)
         return x
         
-class ConvNeXtUNet(ConditionalVectorField, nn.Module):
+class ConvNeXtUNet(ConditionalVectorFieldModel):
     def __init__(self, in_channels=4, out_channels=2,
                  dims=[64,128,256,512], depths=[2,2,2,4],
                  drop_path=0., time_dim=128
@@ -291,8 +291,7 @@ class ConvNeXtUNet(ConditionalVectorField, nn.Module):
         
 def main():
     from torchinfo import summary
-    # model = ConvNeXtUNet(in_channels=2, dims=[80,160,320,640], depths=[1,1,3,1])
-    model = ConvNeXtUNet(in_channels=4, out_channels=2, dims=[96,192,384,768], depths=[2,2,6,2])
+    model = ConvNeXtUNet(in_channels=4, out_channels=2, dims=[64,128,256,512], depths=[2,2,4,4])
     # out = model(torch.randn(5,2,512,100), torch.randn(5))
     summary(
         model,

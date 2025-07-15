@@ -15,7 +15,15 @@ from data.dataset import prepare_dataloader # Using the dataloader function from
 from src.models.seanet import GeneratorSeanet # The model from your core logic
 from src.flow.path import DataLoaderConditionalProbabilityPath, DataLoaderConditionalProbabilityPathWithPrior, LinearAlpha, LinearBeta, LinearSigmaBeta
 from src.trainer.trainer import WaveTrainer, CFGWaveTrainer, WaveTrainerWithPrior
+from src.trainer.stft_trainer import STFTTrainer
+
 from src.utils.utils import print_config  # Assuming you have a print_config utility
+
+from src.utils.spectral_ops import InvertibleFeatureExtractor, AmplitudeCompressedComplexSTFT
+from src.models.convnext_unet import ConvNeXtUNet, ConditionalVectorFieldModel
+from src.flow.path_stft import ConditionalProbabilityPath, ReFlowPath, OriginalCFMPath, DataDependentPriorPath
+
+
 
 # --- Global Constants ---
 DEVICE = f'cuda' if torch.cuda.is_available() else 'cpu'
@@ -91,18 +99,48 @@ def main():
     ## --- 
         
     # Prior
-    model = GeneratorSeanet(**config.model)
-    path = DataLoaderConditionalProbabilityPathWithPrior(
-        p_simple_shape=config.path.p_simple_shape, # e.g., [16, 1, 38400]
-        alpha=alpha,
-        beta=beta,
-    )
-    trainer = WaveTrainerWithPrior(
-        path=path,
-        model=model,
-        dataloader=train_loader,
-    )
+    # model = GeneratorSeanet(**config.model)
+    # path = DataLoaderConditionalProbabilityPathWithPrior(
+    #     p_simple_shape=config.path.p_simple_shape, # e.g., [16, 1, 38400]
+    #     alpha=alpha,
+    #     beta=beta,
+    # )
+    # trainer = WaveTrainerWithPrior(
+    #     path=path,
+    #     model=model,
+    #     dataloader=train_loader,
+    # )
 
+    # # --- Start Training ---
+    # print("INFO: Starting training...")
+    # trainer.train(
+    #     num_epochs=config.train.num_epochs,
+    #     device=torch.device(DEVICE),
+    #     lr=config.optimizer.learning_rate,
+    #     ckpt_save_dir=config.train.ckpt_save_dir,
+    #     ckpt_load_path=config.train.get('ckpt_load_path', None),
+    # )
+
+    ## STFT
+    transform = AmplitudeCompressedComplexSTFT(**config.transform)
+    path = OriginalCFMPath()
+    model = ConvNeXtUNet(**config.model)
+    
+    from torchinfo import summary
+    summary(
+        model,
+        input_data=[torch.randn(4,2,512,65), torch.randn(4), torch.randn(4,2,512,65)],
+        depth=4,
+        col_names=["input_size", "output_size", "num_params"],
+        verbose=1
+    )
+    
+    trainer = STFTTrainer(
+                        path=path,
+                        model=model,
+                        dataloader=train_loader,
+                        transform=transform,
+                        )
     # --- Start Training ---
     print("INFO: Starting training...")
     trainer.train(
@@ -112,7 +150,6 @@ def main():
         ckpt_save_dir=config.train.ckpt_save_dir,
         ckpt_load_path=config.train.get('ckpt_load_path', None),
     )
-
     print("INFO: Training finished.")
     if args.wandb:
         wandb.finish()

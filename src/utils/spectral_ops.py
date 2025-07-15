@@ -87,12 +87,17 @@ class ComplexSTFT(InvertibleFeatureExtractor):
         self.center = True  # not configurable for now - TODO?
 
     def forward(self, x: Tensor, **kwargs):
-        """Assumes x is an audio tensor of shape [B, C, T] or [B, T]"""
+        """Assumes x is an audio tensor of shape [B, C, T] or [B, T]
+        
+        [B,C,T] -> [B,C,F,T]
+        [B,C,T] -> [B,F,T]
+    
+        """
         # rearrange() used since stft() API is annoying and only wants *one* extra (batch) dim
         bc = "b c" if x.ndim == 3 else "b"
         X = torch.stft(
             rearrange(x, f"{bc} t -> ({bc}) t"), n_fft=self.n_fft, hop_length=self.hop_length,
-            window=self.window, center=self.center,
+            window=self.window.to(x.device), center=self.center,
             onesided=True, return_complex=True,
         )
         X = rearrange(X, f"({bc}) f t -> {bc} f t", b=x.shape[0])
@@ -104,7 +109,7 @@ class ComplexSTFT(InvertibleFeatureExtractor):
         bc = "b c" if X.ndim == 4 else "b"
         x = torch.istft(
             rearrange(X, f"{bc} f t -> ({bc}) f t"), n_fft=self.n_fft, hop_length=self.hop_length,
-            window=self.window, center=self.center,
+            window=self.window.to(X.device), center=self.center,
             onesided=True, return_complex=False,
             length=orig_length,
         )
