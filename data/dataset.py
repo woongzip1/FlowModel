@@ -195,6 +195,5 @@ if __name__ == "__main__":
 # find /home/woongzip/Dataset/nsynth-test -name "*.wav" > nsynth-testin.txt
 
 find /ssd/woongzip/dataset_real/GT/MUSDB18_split -name "*.wav" > audio_48.txt
-
-
+find /ssd/woongzip/dataset_real/GT/VCTK -name "*.wav" > speech_48.txt
 """

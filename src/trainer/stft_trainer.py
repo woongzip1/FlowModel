@@ -82,13 +82,14 @@ class Trainer(ABC):
         
         # Save the recent model checkpoint
         recent_ckpt_path = os.path.join(save_dir, 'recent.pth')
+        print(f"✅ Recent model saved at epoch {epoch}")
         torch.save(state, recent_ckpt_path)
         
         # If this is the best model, copy the recent checkpoint to best_model.pth
         if is_best:
             best_ckpt_path = os.path.join(save_dir, 'best_model.pth')
             shutil.copyfile(recent_ckpt_path, best_ckpt_path)
-            print(f"✅ Best model saved at epoch {epoch+1} with loss {self.best_loss:.6f}")
+            print(f"✅ Best model saved at epoch {epoch} with loss {self.best_loss:.6f}")
             
     def load_checkpoint(self, ckpt_path: str):
         """
@@ -111,7 +112,7 @@ class Trainer(ABC):
         self.start_epoch = checkpoint['epoch'] + 1
         self.best_loss = checkpoint.get('best_loss', float('inf')) # Handle older checkpoints
         
-        print(f"🚀 Checkpoint loaded successfully from {ckpt_path}. Resuming from end of epoch {self.start_epoch}.")
+        print(f"🚀 Checkpoint loaded successfully from {ckpt_path}. Resuming from end of epoch {checkpoint['epoch']}.")
    
     @staticmethod
     def load_model_for_inference(model, ckpt_path, device='cuda'):
@@ -135,16 +136,14 @@ class Trainer(ABC):
         # Report model size
         size_b = model_size_b(self.model)
         print(f'Training model with size: {size_b / MiB:.3f} MiB')
+        self.model.to(self.device)
+        self.optimizer = self.get_optimizer(learning_rate)
         
         if ckpt_load_path:
             self.load_checkpoint(ckpt_load_path)
         
-        # Set model and optimizers
-        self.model.to(self.device)
-        opt = self.get_optimizer(learning_rate)
-        self.model.train()
-
         # Train loop
+        self.model.train()
         print(f"--- Starting training from epoch {self.start_epoch} ---")
         for epoch_idx in range(self.start_epoch, num_epochs+1):
             epoch_pbar = tqdm(self.train_loader, 
@@ -153,10 +152,10 @@ class Trainer(ABC):
             total_epoch_loss = 0.0
             
             for batch_idx, batch in enumerate(epoch_pbar):
-                opt.zero_grad()
+                self.optimizer.zero_grad()
                 loss = self._train_step(batch)
                 loss.backward()
-                opt.step()
+                self.optimizer.step()
                 
                 total_epoch_loss += loss.item() 
                 epoch_pbar.set_postfix({'loss': f'{loss.item():.6f}'})
