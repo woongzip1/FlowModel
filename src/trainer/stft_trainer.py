@@ -35,57 +35,33 @@ class Trainer(ABC):
     """
     Abstract base class for Trainer 
     """
-    def __init__(self, model: nn.Module, dataloader: nn.Module):
+    def __init__(self, 
+                 model: nn.Module, 
+                 train_loader: nn.Module,
+                 val_loader: nn.Module,
+                 device: torch.device,
+                 ):
         super().__init__()
         self.model = model
-        self.dataloader = dataloader
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.device = device
+        self.start_epoch = 1
+        self.best_loss = float('inf')
+        self.optimizer = None
         
     @abstractmethod
-    def get_train_loss(self, **kwargs) -> torch.Tensor:
+    def _train_step(self, **kwargs) -> torch.Tensor:
+        # return train step loss
+        pass
+    
+    # @abstractmethod
+    def _val_step(self, **kwargs) -> torch.Tensor:
         pass
 
     def get_optimizer(self, lr: float):
         return torch.optim.Adam(self.model.parameters(), lr=lr)
 
-    def train(self, num_epochs: int, device: torch.device, lr: float = 1e-3, **kwargs) -> torch.Tensor:
-        """
-        Main training loop
-        """
-        # Report model size
-        size_b = model_size_b(self.model)
-        print(f'Training model with size: {size_b / MiB:.3f} MiB')
-        
-        # Set model and optimizers
-        self.model.to(device)
-        opt = self.get_optimizer(lr)
-        self.model.train()
-
-        # Train loop
-        pbar = tqdm(enumerate(range(num_epochs)))
-        for idx, epoch in pbar:
-            opt.zero_grad()
-            loss = self.get_train_loss(**kwargs)
-            loss.backward()
-            opt.step()
-            pbar.set_description(f'Epoch {idx}, loss: {loss.item():.3f}')
-
-        # Finish
-        self.model.eval()
-    
-class STFTTrainer(Trainer):
-    def __init__(self,
-                 path: ConditionalProbabilityPath,
-                 model: ConditionalVectorFieldModel,
-                 transform: InvertibleFeatureExtractor,
-                 **kwargs):
-        super().__init__(model, **kwargs)
-        self.path = path
-        self.optimizer = None
-        self.start_epoch = 1
-        self.best_loss = float('inf')
-        self.device = None
-        self.transform = transform
-        
     def save_checkpoint(self, epoch: int, is_best: bool, save_dir: str):
         """
         Saves a checkpoint of the model and optimizer.
@@ -113,7 +89,7 @@ class STFTTrainer(Trainer):
             best_ckpt_path = os.path.join(save_dir, 'best_model.pth')
             shutil.copyfile(recent_ckpt_path, best_ckpt_path)
             print(f"✅ Best model saved at epoch {epoch+1} with loss {self.best_loss:.6f}")
-    
+            
     def load_checkpoint(self, ckpt_path: str):
         """
         Loads a checkpoint to resume training.
@@ -130,79 +106,84 @@ class STFTTrainer(Trainer):
             raise RuntimeError("Optimizer must be initialized before loading a checkpoint.")
 
         checkpoint = torch.load(ckpt_path, map_location=self.device)
-        
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.start_epoch = checkpoint['epoch'] + 1
         self.best_loss = checkpoint.get('best_loss', float('inf')) # Handle older checkpoints
         
-        print(f"Checkpoint loaded successfully from {ckpt_path}. Resuming from end of epoch {self.start_epoch}.")
-        
+        print(f"🚀 Checkpoint loaded successfully from {ckpt_path}. Resuming from end of epoch {self.start_epoch}.")
+   
     @staticmethod
-    def load_model_params(model, ckpt_path, device='cuda'):
-        model = model.to(device)
-        print(f"Loading '{ckpt_path}...'")
-        ckpt = torch.load(ckpt_path)
+    def load_model_for_inference(model, ckpt_path, device='cuda'):
+        model.to(device)
+        print(f"Loading model weights from '{ckpt_path}' for inference...")
+        ckpt = torch.load(ckpt_path, map_location=device)
         model.load_state_dict(ckpt['model_state_dict'])
-        print(f"Model loaded from {ckpt_path}")
+        model.eval()
+        print(f"Model loaded successfully from {ckpt_path}")
         return model
-    
-    def train(self, num_epochs: int, device: torch.device, lr: float = 1e-4, 
-              ckpt_save_dir: str = 'checkpoints', ckpt_load_path: str = None,
-              **kwargs) -> None:
+
+    def train(self, 
+                num_epochs: int, 
+                learning_rate: float = 1.0e-4,
+                ckpt_save_dir: str = 'ckpts',
+                ckpt_load_path: str = None,
+                **kwargs):
         """
         Main training loop
         """
-        self.device = device
-        
         # Report model size
         size_b = model_size_b(self.model)
         print(f'Training model with size: {size_b / MiB:.3f} MiB')
-
-        # Set model and optimizers
-        self.model.to(device)
-        self.optimizer = self.get_optimizer(lr)
         
-        # Load ckpt
         if ckpt_load_path:
             self.load_checkpoint(ckpt_load_path)
+        
+        # Set model and optimizers
+        self.model.to(self.device)
+        opt = self.get_optimizer(learning_rate)
         self.model.train()
-        print(f"--- Starting training from epoch {self.start_epoch} ---")
 
         # Train loop
+        print(f"--- Starting training from epoch {self.start_epoch} ---")
         for epoch_idx in range(self.start_epoch, num_epochs+1):
-            epoch_pbar = tqdm(self.dataloader, desc=f'⚙ Epoch {epoch_idx}/{num_epochs}',
+            epoch_pbar = tqdm(self.train_loader, 
+                              desc=f'⚙ Epoch {epoch_idx}/{num_epochs}',
                               dynamic_ncols=True, leave=True)
             total_epoch_loss = 0.0
             
-            for batch_idx, batch_data in enumerate(epoch_pbar):    
-                self.optimizer.zero_grad()
-                loss = self.get_train_loss(batch_data, device)
+            for batch_idx, batch in enumerate(epoch_pbar):
+                opt.zero_grad()
+                loss = self._train_step(batch)
                 loss.backward()
-                self.optimizer.step()
+                opt.step()
                 
-                current_loss = loss.item()
-                total_epoch_loss += current_loss
-                
-                epoch_pbar.set_postfix({'loss': f'{current_loss:.6f}'})
-            
-            # --- End of Epoch ---
-            avg_epoch_loss = total_epoch_loss / len(self.dataloader)
+                total_epoch_loss += loss.item() 
+                epoch_pbar.set_postfix({'loss': f'{loss.item():.6f}'})
+            # --- End of epoch ---
+            # --- Validation epoch
+            avg_epoch_loss = total_epoch_loss / len(self.train_loader)
             print(f'Epoch {epoch_idx} completed. Average Loss: {avg_epoch_loss:.6f}')
             
-            # Check if the current model is the best
+            # --- Checkpointing ---
             is_best = avg_epoch_loss < self.best_loss
             if is_best:
                 self.best_loss = avg_epoch_loss
-            
-            # Save checkpoint
             self.save_checkpoint(epoch=epoch_idx, is_best=is_best, save_dir=ckpt_save_dir)
 
-            ## save_epoch_loss()
-        
         # --- Finish ---
         self.model.eval()
-        print('Training finished')
+        print('✅ Training finished!')
+        
+class STFTTrainer(Trainer):
+    def __init__(self,
+                 model: ConditionalVectorFieldModel,
+                 path: ConditionalProbabilityPath,
+                 transform: InvertibleFeatureExtractor,
+                 **kwargs):
+        super().__init__(model, **kwargs)
+        self.path = path
+        self.transform = transform
     
     def _preprocess(self, waveform):
         """ waveform: [B,C,T]
@@ -210,11 +191,10 @@ class STFTTrainer(Trainer):
         spec = self.transform(waveform) # [B,C,F,T]
         real = torch.view_as_real(spec.squeeze(1)) # [B,F,T,2]
         real = real.permute(0,3,1,2) # -> [B,2,F,T]
-        
         return real[:,:,:-1,:]
     
     def _postprocess(self, spec): 
-        # [B,2,F,T]
+        # [B,2,F,T] -> [B,T]
         spec = torch.nn.functional.pad(spec, pad=[0,0,0,1], value=0)
         spec = spec.permute(0,2,3,1).contiguous()
         print(spec.shape)
@@ -222,7 +202,7 @@ class STFTTrainer(Trainer):
         waveform = self.transform.invert(spec)
         return waveform
     
-    def get_train_loss(self, batch_data:dict, device:torch.device, **kwargs):
+    def _train_step(self, batch_data:dict, **kwargs):
         """
         - batch data
         - device
@@ -232,8 +212,8 @@ class STFTTrainer(Trainer):
         """
         
         ## Sample z,y from p_data
-        z = batch_data['hr'].to(device) # [B,1,T] 
-        y = batch_data['lr_wave'].to(device)
+        z = batch_data['hr'].to(self.device) # [B,1,T] 
+        y = batch_data['lr_wave'].to(self.device)
         batch_size = z.shape[0]
         
         ## z,y -> Z,Y (transform)
@@ -257,10 +237,11 @@ class STFTTrainer(Trainer):
     
 
 def main():
+    from torchinfo import summary
     from src.utils.utils import load_config
     from data.dataset import make_dataset, prepare_dataloader
     
-    config_path = 'configs/audio48.yaml'
+    config_path = 'configs/config_template.yaml'
     config = load_config(config_path)
     train_loader, val = prepare_dataloader(config)
 
@@ -270,12 +251,10 @@ def main():
                                         alpha=0.3, beta=1, comp_eps=1e-4,)
     
     path = OriginalCFMPath()
-    model = ConvNeXtUNet(in_channels=4, out_channels=2, dims=[96,192,384,768], depths=[2,2,6,2])
-    # model = ConvNeXtUNet(in_channels=4, out_channels=2, dims=[64,128,256,512], depths=[2,2,6,2])
-    from torchinfo import summary
+    model = ConvNeXtUNet(in_channels=4, out_channels=2, dims=[64,128,256,512], depths=[2,2,4,2])
     summary(
         model,
-        input_data=[torch.randn(4,2,512,100), torch.randn(4), torch.randn(4,2,512,100)],
+        input_data=[torch.randn(1,2,512,100), torch.randn(4), torch.randn(1,2,512,100)],
         depth=4,
         col_names=["input_size", "output_size", "num_params"],
         verbose=1
@@ -284,10 +263,12 @@ def main():
     trainer = STFTTrainer(
                         path=path,
                         model=model,
-                        dataloader=train_loader,
+                        train_loader=train_loader,
+                        val_loader=train_loader,
                         transform=transform,
+                        device='cuda',
                         )
-    trainer.train(1, device='cuda')
+    trainer.train(num_epochs=1)
 
 if __name__=="__main__":
     main()

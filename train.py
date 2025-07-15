@@ -34,7 +34,7 @@ print(f"INFO: Running on device: {DEVICE}")
 def parse_args():
     """Parses command-line arguments."""
     parser = argparse.ArgumentParser(description="Flow-Matching Model Training Script")
-    parser.add_argument('--config', type=str, default='configs/config_template.yaml', required=True, help="Path to the training configuration file.")
+    parser.add_argument('-c', '--config', type=str, default='configs/config_template.yaml', required=True, help="Path to the training configuration file.")
     parser.add_argument('--wandb', type=lambda x: x.lower() == 'true', default=False, help="Set to 'true' to enable WandB logging.")
     return parser.parse_args()
 
@@ -130,16 +130,17 @@ def main():
     trainer = STFTTrainer(
                         path=path,
                         model=model,
-                        dataloader=train_loader,
+                        train_loader=train_loader,
+                        val_loader=val_loader,
                         transform=transform,
+                        device=torch.device(DEVICE),
                         )
     
     # --- Start Training ---
     print("INFO: Starting training...")
     trainer.train(
         num_epochs=config.train.num_epochs,
-        device=torch.device(DEVICE),
-        lr=config.optimizer.learning_rate,
+        learning_rate=config.optimizer.learning_rate,
         ckpt_save_dir=config.train.ckpt_save_dir,
         ckpt_load_path=config.train.get('ckpt_load_path', None),
     )

@@ -11,7 +11,7 @@ wandb:
 
 # DATALOADER
 dataloader:
-  batch_size: 8
+  batch_size: 1
   num_workers: 4
   prefetch_factor: 2
   persistent_workers: True
@@ -26,9 +26,9 @@ dataset:
     sr: 48000
     multiples: 256
   train:
-    tsv_path: "./data/audio_48.txt"
+    tsv_path: "./data/libri-train.txt"
   val:
-    tsv_path: "./data/libri-val.txt"
+    tsv_path: "./data/libri-train.txt"
   test:
     tsv_path: "./data/libri-test.txt"
 
