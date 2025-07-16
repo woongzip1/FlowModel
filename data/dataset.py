@@ -61,10 +61,12 @@ class Dataset(torch.utils.data.Dataset):
                  tsv_path: str,
                  num_samples=24000, #16384
                  sr=24000,
-                 multiples=256,
+                 multiples=1,
+                 sr_lr=8000,
                  mode="train"):
         self.num_samples, self.sr, self.mode = num_samples, sr, mode
         self.N = multiples
+        self.sr_lr = sr_lr
         
         self.wb_paths = read_tsv_firstcol(tsv_path)
         print(len(self.wb_paths), 'samples loaded!')
@@ -106,7 +108,9 @@ class Dataset(torch.utils.data.Dataset):
         
         if self.mode=="train":
             target_signal_len = self.num_samples // self.N * self.N # multiple of N 
+            # target_signal_len = self.num_samples
             current_signal_len = y.shape[-1]
+            # print(target_signal_len)
             if current_signal_len <= target_signal_len:
                 y = self._ensure(y[..., :current_signal_len], target_signal_len)
             else:
@@ -114,17 +118,18 @@ class Dataset(torch.utils.data.Dataset):
                 y = y[..., s:s+target_signal_len]
         elif self.mode in ['val']:
             # y = self._ensure(y, 40000, repeat=False)
-            y = self._pad(y, self.N)
+            # y = self._pad(y, self.N)
+            y = y
         else:
             sys.exit(f"unsupported mode! (train/val)") 
             
         # get lr wave
-        lr = self._get_lr_wav(y, target_sr=8000, orig_sr=self.sr)
-        lr_spec = self._get_stft(lr)
+        lr = self._get_lr_wav(y, target_sr=self.sr_lr, orig_sr=self.sr)
+        # lr_spec = self._get_stft(lr)
         
         outdict = {
             'hr': y,
-            'lr': lr_spec,
+            'lr': 0,
             'filename': Path(wb_path).stem,
             'lr_wave': lr,
         }

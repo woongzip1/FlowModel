@@ -121,7 +121,7 @@ def main():
     ## Dummy input
     summary(
         model,
-        input_data=[torch.randn(4,2,512,65), torch.randn(4), torch.randn(4,2,512,65)],
+        input_data=[torch.randn(1,2,512,65), torch.rand(1), torch.randn(1,2,512,65)],
         depth=4,
         col_names=["input_size", "output_size", "num_params"],
         verbose=1

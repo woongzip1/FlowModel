@@ -11,7 +11,7 @@ wandb:
 
 # DATALOADER
 dataloader:
-  batch_size: 1
+  batch_size: 8
   num_workers: 4
   prefetch_factor: 2
   persistent_workers: True
@@ -20,15 +20,14 @@ dataloader:
 # DATASET
 dataset:
   ratio: 1
-  validation_reduce_step: 3
   common:
-    num_samples: 32768
+    num_samples: 32767
     sr: 48000
-    multiples: 256
+    sr_lr: 8000
   train:
-    tsv_path: "./data/libri-train.txt"
+    tsv_path: "./data/speech_48.txt"
   val:
-    tsv_path: "./data/libri-train.txt"
+    tsv_path: "./data/speech_48_val.txt"
   test:
     tsv_path: "./data/libri-test.txt"
 
@@ -48,8 +47,7 @@ transform:
   beta: 1 
   comp_eps: 1.0e-4
 
-# Model
-model:  
+model:
   in_channels: 4 
   out_channels: 2 
   dims: [96, 192, 384, 768] # [64, 128, 256, 512]
@@ -60,9 +58,9 @@ optimizer:
 
 train:
   num_epochs: 200
-  ckpt_save_dir: ./ckpts_cfm/
-  # ckpt_load_path: "./ckpts_cfm/recent.pth"
-  ckpt_load_path: null
+  ckpt_save_dir: ./ckpts_cfm_speech/
+  ckpt_load_path: "./ckpts_cfm_speech/cfm_20.pth"
+  # ckpt_load_path: null
   # eta: 0.5
 
 inference:

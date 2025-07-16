@@ -69,9 +69,9 @@ class ReFlowPath(ConditionalProbabilityPath):
 class DataDependentPriorPath(ConditionalProbabilityPath):
     def __init__(self,
         sampling_rate: int,
-        n_fft: int = 1024,
+        num_freq_bins: int=512,
         alpha: float = 3e-4,
-        f_c: float = 4000.0,
+        f_c: float = 4000,
         sigma_max: float = 0.5
     ):
         super().__init__()
@@ -81,21 +81,21 @@ class DataDependentPriorPath(ConditionalProbabilityPath):
         self.sigma_max = sigma_max
 
         # frequency dependent mask
-        F = n_fft // 2 # consider this is unvalid
+        F = num_freq_bins # consider this is unvalid
         freqs = torch.linspace(0, self.sr/2, F)
         m_k = torch.sigmoid(self.alpha * (freqs - self.f_c))
-        sigma_noise = m_k * self.sigma_max
+        sigma_per_freq = m_k * self.sigma_max
         
         # Masks
         # preserve_mask = 1.0 - m_k
         # self.register_buffer("preserve_mask", preserve_mask.view(1, 1, -1, 1)) # [1,1,F,1]
-        self.register_buffer("sigma_noise", sigma_noise.view(1, 1, -1, 1)) # [1,1,F,1]
+        self.register_buffer("sigma_per_freq", sigma_per_freq.view(1, 1, -1, 1)) # [1,1,F,1]
         
             
     def sample_source(self, Z, Y):
         # x_low_freq = Y * self.preserve_mask
         x_low_freq = Y # Y is LR spec 
-        noise = torch.randn_like(Y) * self.sigma_noise
+        noise = torch.randn_like(Y) * self.sigma_per_freq.to(Y.device)
         x0 = x_low_freq + noise
         return x0
     
@@ -104,12 +104,6 @@ class DataDependentPriorPath(ConditionalProbabilityPath):
     
     def get_target_vector_field(self, xt: torch.Tensor, x0: torch.Tensor, Z: torch.Tensor, Y: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         return Z - x0
-    
-PATHS = {
-    "OriginalCFM": OriginalCFMPath,
-    "ReFlow": ReFlowPath,
-    "DataDependentPrior": DataDependentPriorPath
-}
 
 def get_path(config):
     class_path = config.get("class_path")
