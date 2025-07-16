@@ -193,3 +193,10 @@ class NoOp(InvertibleFeatureExtractor):
 #                        torch.exp(log_amp)*torch.sin(pha)), dim=-1)
 
 #     return log_amp, pha, com
+
+
+
+## --- TODO ---
+## STFT의 frame downsampling 을 맞추는 option 이라면?
+## Ref: Vocos MelFeatureExtractor with pad='same'
+## 현재: 32768 -> Hop 512 -> 65 frames (not 64)

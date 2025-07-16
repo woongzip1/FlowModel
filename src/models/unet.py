@@ -188,7 +188,6 @@ class MNISTUNet(ConditionalVectorField):
             decoders.append(Decoder(next_c, curr_c, num_residual_layers, t_embed_dim, y_embed_dim))
         self.encoders = nn.ModuleList(encoders)
         self.decoders = nn.ModuleList(reversed(decoders))
-
         self.midcoder = Midcoder(channels[-1], num_residual_layers, t_embed_dim, y_embed_dim)
             
         # Final convolution

@@ -4,6 +4,7 @@ import torch
 from tqdm import tqdm
 from abc import ABC, abstractmethod
 from src.flow.path import ConditionalVectorFieldModel
+from torchdiffeq import odeint
 
 class ODE(ABC):
     @abstractmethod
@@ -99,3 +100,38 @@ class EulerSolver(Solver):
         
     def step(self, xt: torch.Tensor, t: torch.Tensor, h: torch.Tensor, **kwargs):
         return xt + self.ode.drift_coefficient(xt,t, **kwargs) * h
+    
+class TorchDiffeqSolver(Solver):
+    def __init__(self,
+                 ode: ODE,
+                 method: str = 'euler',
+                 atol: float = 1e-5,
+                 rtol: float = 1e-5,
+                 ):
+        super().__init__()
+        self.ode = ode
+        self.method = method
+        self.atol = atol
+        self.rtol = rtol
+    
+    @torch.no_grad()
+    def simulate(self, x_init: torch.Tensor, ts: torch.Tensor, **kwargs):
+        """
+        x_init: [B,C,H,W]
+        ts: [N]
+        return: final state [B,C,H,W]
+        """        
+        # ts_1d = ts.view(-1)
+        # f(t,x) : lambda function
+        func = lambda t, x: self.ode.drift_coefficient(xt=x, t=t, **kwargs)
+        
+        xs = odeint(
+                    func=func, 
+                    y0=x_init, t=ts, 
+                    method=self.method,
+                    atol=self.atol, rtol=self.rtol) # [N,B,C,H,W]   
+        return xs[-1]
+    
+
+# solver 가 step 1에서 underperformance 하는 것 체크해보아야 함
+# STFT 맨 뒷단에 noise 강하게 나타나는 거 왜인지 체크해보아야 함
