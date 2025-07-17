@@ -20,7 +20,7 @@ class ODE(ABC):
         pass
     
 class Solver(ABC):
-    @abstractmethod
+    # @abstractmethod
     def step(self, xt: torch.Tensor, t: torch.Tensor, dt: torch.Tensor, **kwargs):
         """
         Takes one simulation step

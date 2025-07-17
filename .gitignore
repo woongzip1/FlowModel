@@ -5,6 +5,8 @@
 ckpts*/
 notebooks/
 
+wandb/
+
 configs/*.yaml
 ! configs/config_template.yaml
 

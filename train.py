@@ -20,8 +20,9 @@ from src.trainer.trainer import WaveTrainer, CFGWaveTrainer, WaveTrainerWithPrio
 from src.trainer.stft_trainer import STFTTrainer
 
 from src.utils.utils import print_config  # Assuming you have a print_config utility
-
 from src.utils.spectral_ops import InvertibleFeatureExtractor, AmplitudeCompressedComplexSTFT
+from src.utils.logger import BaseLogger, get_logger
+
 from src.models.convnext_unet import ConvNeXtUNet, ConditionalVectorFieldModel
 from src.flow.path_stft import get_path
 
@@ -57,15 +58,8 @@ def main():
     print_config(config)
     print("---------------------")
 
-    # Initialize WandB if enabled
-    if args.wandb:
-        wandb.init(
-            project=config.wandb.project_name,
-            entity=config.wandb.entity,
-            config=config.to_dict(), # wandb expects a dict
-            name=config.wandb.run_name,
-            notes=config.wandb.get('notes', '')
-        )
+    # Initialize wandb
+    logger = get_logger(config, args.wandb)
     
     # --- 2. Data Preparation ---
     print("INFO: Preparing dataloaders...")
@@ -134,15 +128,15 @@ def main():
                         val_loader=val_loader,
                         transform=transform,
                         device=torch.device(DEVICE),
+                        logger=logger,
                         )
     
     # --- Start Training ---
     print("INFO: Starting training...")
     trainer.train(
-        num_epochs=config.train.num_epochs,
-        learning_rate=config.optimizer.learning_rate,
-        ckpt_save_dir=config.train.ckpt_save_dir,
-        ckpt_load_path=config.train.get('ckpt_load_path', None),
+        optimizer_config=config.optimizer,
+        scheduler_config=config.scheduler,
+        **config.train,
     )
     print("INFO: Training finished.")
     if args.wandb:

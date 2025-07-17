@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from abc import ABC, abstractmethod
-from timm.models.layers import DropPath 
+from timm.models.layers import DropPath, trunc_normal_
 
 class ConditionalVectorFieldModel(nn.Module, ABC):
     """
@@ -237,6 +237,12 @@ class ConvNeXtUNet(ConditionalVectorFieldModel):
             self.decoders.append(DecoderBlock(dim_in, dim_out, depths[i], drop_path, time_dim))
         
         self.final_conv = nn.Conv2d(dims[0], out_channels, kernel_size=1)
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, (nn.Conv2d, nn.Linear)):
+            trunc_normal_(m.weight, std=.02)
+            nn.init.constant_(m.bias, 0)
         
     def _pad_frames(self, x):
         num_frames = x.shape[-1]
