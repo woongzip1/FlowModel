@@ -72,13 +72,15 @@ class DataDependentPriorPath(ConditionalProbabilityPath):
         num_freq_bins: int=512,
         alpha: float = 3e-4,
         f_c: float = 4000,
-        sigma_max: float = 0.5
+        sigma_max: float = 0.5,
+        sigma_min: float = 0.0,
     ):
         super().__init__()
         self.sr = sampling_rate
         self.alpha = alpha
         self.f_c = f_c
         self.sigma_max = sigma_max
+        self.sigma_min = sigma_min
 
         # frequency dependent mask
         F = num_freq_bins # consider this is unvalid
@@ -100,10 +102,10 @@ class DataDependentPriorPath(ConditionalProbabilityPath):
         return x0
     
     def sample_xt(self, x0, Z, Y, t):
-        return t * Z + (1-t) * x0
+        return t * Z + (1 - t + self.sigma_min*t) * x0
     
     def get_target_vector_field(self, xt: torch.Tensor, x0: torch.Tensor, Z: torch.Tensor, Y: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        return Z - x0
+        return Z - (1 - self.sigma_min) * x0
 
 def get_path(config):
     class_path = config.get("class_path")

@@ -90,7 +90,7 @@ class Trainer(ABC):
         
         return scheduler
 
-    def save_checkpoint(self, epoch: int, is_best: bool, save_dir: str):
+    def save_checkpoint(self, epoch: int, is_best: bool, save_dir: str, filename=None):
         """
         Saves a checkpoint of the model and optimizer.
 
@@ -111,7 +111,10 @@ class Trainer(ABC):
             state['scheduler_state_dict'] = self.scheduler.state_dict()
             
         # Save the recent model checkpoint
-        recent_ckpt_path = os.path.join(save_dir, 'recent.pth')
+        if filename:
+            recent_ckpt_path = os.path.join(save_dir, filename)
+        else:
+            recent_ckpt_path = os.path.join(save_dir, 'recent.pth')
         print(f"✅ Recent model saved at epoch {epoch}")
         torch.save(state, recent_ckpt_path)
         
@@ -152,7 +155,7 @@ class Trainer(ABC):
     def load_model_for_inference(model, ckpt_path, device='cuda'):
         model.to(device)
         print(f"Loading model weights from '{ckpt_path}' for inference...")
-        ckpt = torch.load(ckpt_path, map_location=device)
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
         model.load_state_dict(ckpt['model_state_dict'])
         model.eval()
         print(f"Model loaded successfully from {ckpt_path}")
@@ -268,12 +271,11 @@ class Trainer(ABC):
                     is_best = avg_val_loss < self.best_loss
                     if is_best:
                         self.best_loss = avg_val_loss
-                    pdb.set_trace()
-                    # self.save_checkpoint(epoch=epoch_idx, is_best=is_best, save_dir=ckpt_save_dir)
+                    self.save_checkpoint(epoch=epoch_idx, is_best=is_best, save_dir=ckpt_save_dir)
 
                 if global_step >= max_steps: # max step end train
                     print(f'\n🏁 Reached max_steps ({global_step}/{max_steps}). Finishing training.')
-                    self.save_checkpoint(epoch=epoch_idx, is_best=False, save_dir=ckpt_save_dir, filename=f'ckpt_step_{global_step}.pth')
+                    self.save_checkpoint(epoch=epoch_idx, is_best=False, save_dir=ckpt_save_dir, filename=f'step_{global_step}.pth')
                     return 
                                         
             # --- End of epoch ---
