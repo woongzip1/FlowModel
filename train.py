@@ -24,6 +24,7 @@ from src.utils.spectral_ops import InvertibleFeatureExtractor, AmplitudeCompress
 from src.utils.logger import BaseLogger, get_logger
 
 from src.models.convnext_unet import ConvNeXtUNet, ConditionalVectorFieldModel
+from src.models.convnext_unet_condition import ConvNeXtUNetCond
 from src.flow.path_stft import get_path
 
 
@@ -110,16 +111,17 @@ def main():
     ## STFT
     transform = AmplitudeCompressedComplexSTFT(**config.transform)
     path = get_path(config.path)
-    model = ConvNeXtUNet(**config.model)
+    # model = ConvNeXtUNet(**config.model)
+    model = ConvNeXtUNetCond(**config.model)
     
     ## Dummy input
-    summary(
-        model,
-        input_data=[torch.randn(1,2,512,65), torch.rand(1), torch.randn(1,2,512,65)],
-        depth=4,
-        col_names=["input_size", "output_size", "num_params"],
-        verbose=1
-    )
+    # summary(
+    #     model,
+    #     input_data=[torch.randn(1,2,512,65), torch.rand(1), torch.randn(1,2,512,65)],
+    #     depth=4,
+    #     col_names=["input_size", "output_size", "num_params"],
+    #     verbose=1
+    # )
     
     trainer = STFTTrainer(
                         path=path,

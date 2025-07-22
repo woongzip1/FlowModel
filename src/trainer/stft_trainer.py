@@ -61,6 +61,7 @@ class Trainer(ABC):
         self.scheduler = None
         self.logger = logger
         
+        
     @abstractmethod
     def _train_step(self, **kwargs) -> torch.Tensor:
         # return train step loss
@@ -306,6 +307,7 @@ class STFTTrainer(Trainer):
         super().__init__(model, **kwargs)
         self.path = path
         self.transform = transform
+        self.lr_freq_bins = 80
     
     def _preprocess(self, waveform):
         """ waveform: [B,C,T]
@@ -323,7 +325,40 @@ class STFTTrainer(Trainer):
         waveform = self.transform.invert(spec)
         return waveform
     
+    # def _train_step(self, batch_data:dict, **kwargs):
+    #     """
+    #     - batch data
+    #     - device
+        
+    #     Returns:
+    #         - torch.Tensor 
+    #     """
+        
+    #     ## Sample z,y from p_data
+    #     z = batch_data['hr'].to(self.device) # [B,1,T] 
+    #     y = batch_data['lr_wave'].to(self.device)
+    #     batch_size = z.shape[0]
+        
+    #     ## z,y -> Z,Y (transform)
+    #     Z = self._preprocess(z)
+    #     Y = self._preprocess(y)
+        
+    #     # pdb.set_trace()
+    #     ## Sample t, y, and x
+    #     ## Shape of z
+    #     t = torch.rand([batch_size, 1, 1, 1], device=z.device) # [B,1,1,1]
+    #     x0 = self.path.sample_source(Y)
+    #     xt = self.path.sample_xt(x0, Z, Y, t)
+        
+    #     # output
+    #     output = self.model(xt, t, Y)
+    #     target = self.path.get_target_vector_field(xt, x0, Z, Y, t)
+    #     loss = flow_matching_loss(predicted_vf=output, target_vf=target)
+        
+    #     return loss
+    
     def _train_step(self, batch_data:dict, **kwargs):
+        # modified for HR reconstruction
         """
         - batch data
         - device
@@ -340,22 +375,115 @@ class STFTTrainer(Trainer):
         ## z,y -> Z,Y (transform)
         Z = self._preprocess(z)
         Y = self._preprocess(y)
+        Y_lr = Y[:,:,:self.lr_freq_bins,:] #[B,2,F1,T]
+        Y_hr = Y[:,:,self.lr_freq_bins:,:]
+        Z_lr = Z[:,:,:self.lr_freq_bins,:]
+        Z_hr = Z[:,:,self.lr_freq_bins:,:]
         
-        # pdb.set_trace()
         ## Sample t, y, and x
         ## Shape of z
         t = torch.rand([batch_size, 1, 1, 1], device=z.device) # [B,1,1,1]
-        x0 = self.path.sample_source(Z, Y)
-        xt = self.path.sample_xt(x0, Z, Y, t)
+        x0 = self.path.sample_source(Y_hr)
+        xt = self.path.sample_xt(x0, Z_hr, Y_lr, t)
         
         # output
-        output = self.model(xt, t, Y)
-        target = self.path.get_target_vector_field(xt, x0, Z, Y, t)
+        output = self.model(xt, t, Y_lr)
+        target = self.path.get_target_vector_field(xt, x0, Z_hr, Y_lr, t)
         loss = flow_matching_loss(predicted_vf=output, target_vf=target)
         
         return loss
     
+    # def _val_step(self, batch_data:dict, idx:int, **kwargs):
+    #     """
+    #     Inference per batch and return validaiton loss
+    #     """
+    #     ## Sample z,y from p_data
+    #     z = batch_data['hr'].to(self.device) # [B,1,T] 
+    #     y = batch_data['lr_wave'].to(self.device)
+    #     batch_size = z.shape[0]
+        
+    #     ## z,y -> Z,Y (transform)
+    #     Z = self._preprocess(z)
+    #     Y = self._preprocess(y)
+        
+    #     # pdb.set_trace()
+    #     ## Sample t, y, and x
+    #     ## Shape of z
+    #     t = torch.rand([batch_size, 1, 1, 1], device=z.device) # [B,1,1,1]
+    #     x0 = self.path.sample_source(Y)
+    #     xt = self.path.sample_xt(x0, Z, Y, t)
+        
+    #     # output
+    #     # pdb.set_trace()
+    #     output = self.model(xt, t, Y)
+    #     target = self.path.get_target_vector_field(xt, x0, Z, Y, t)
+    #     loss = flow_matching_loss(predicted_vf=output, target_vf=target)
+        
+    #     ## --- Metric logging
+    #     lsd_metric = None
+    #     if idx % 100 == 0:
+    #         ode_steps = 20
+    #         ts_metric = torch.linspace(0, 1, ode_steps+1, device=self.device)
+    #         with torch.no_grad():
+    #             ode = VectorFieldODE(net=self.model)
+    #             solver = TorchDiffeqSolver(ode, method='euler')
+    #             x0_batch = self.path.sample_source(Y)
+    #             x1_spec_batch = solver.simulate(x0_batch, ts_metric, y=Y)
+    #             x1_wave_batch = self._postprocess(x1_spec_batch)
+    #             lsd_metric = log_spectral_distance(z[...,:x1_wave_batch.shape[-1]], x1_wave_batch) 
+            
+    #     ## --- Sample data logging
+    #     log_payload = {}
+    #     if idx in [100, 400, 800]:
+    #         # print(f"INFO: Generating validation sample for batch index {idx}")
+    #         # Use the first item in the batch for logging
+    #         z_sample = z[0:1]
+    #         y_sample = y[0:1]
+    #         Y_sample = Y[0:1]
+
+    #         # ODE Solver
+    #         ode = VectorFieldODE(net=self.model)
+    #         solver = TorchDiffeqSolver(ode, method='euler')
+    #         for num_steps in [1, 10, 20, 30]:
+    #             ts = torch.linspace(0, 1, num_steps + 1, device=self.device)
+
+    #             # --- Run Inference ---
+    #             x0_sample = self.path.sample_source(Y_sample)
+    #             x1_spec = solver.simulate(x0_sample, ts, y=Y_sample)
+    #             x1_wave = self._postprocess(x1_spec)
+
+    #             z_sample_c = z_sample[...,:x1_wave.shape[-1]]
+    #             y_sample_c = y_sample[...,:x1_wave.shape[-1]]
+                
+    #             # metric = log_spectral_distance(z_sample, x1_wave)
+                
+    #             # --- Prepare Log Data ---
+    #             spec_gt = draw_spec(t2n(z_sample_c), sr=48000, return_fig=True)
+    #             spec_cond = draw_spec(t2n(y_sample_c), sr=48000, return_fig=True)
+    #             spec_gen = draw_spec(t2n(x1_wave), sr=48000, return_fig=True)
+                
+    #             # Create the dictionary to be logged
+    #             step_logs = {
+    #                 # f"val/{idx}/lsd_{num_steps}_steps": metric.item(),
+                    
+    #                 f"val_samples/{idx}/{num_steps}/audio_ground_truth": wandb.Audio(t2n(z_sample_c), sample_rate=48000),
+    #                 f"val_samples/{idx}/{num_steps}/audio_conditional": wandb.Audio(t2n(y_sample_c), sample_rate=48000),
+    #                 f"val_samples/{idx}/{num_steps}/audio_generated": wandb.Audio(t2n(x1_wave), sample_rate=48000),
+    #                 f"val_samples/{idx}/{num_steps}/spec_ground_truth": wandb.Image(spec_gt),
+    #                 f"val_samples/{idx}/{num_steps}/spec_conditional": wandb.Image(spec_cond),
+    #                 f"val_samples/{idx}/{num_steps}/spec_generated": wandb.Image(spec_gen),
+    #             }
+    #             log_payload.update(step_logs)
+                
+    #     outdict = {
+    #         'loss': loss,
+    #         'lsd': lsd_metric,
+    #         'log_payload': log_payload,
+    #     }
+    #     return outdict
+    
     def _val_step(self, batch_data:dict, idx:int, **kwargs):
+        ## modified
         """
         Inference per batch and return validaiton loss
         """
@@ -367,18 +495,22 @@ class STFTTrainer(Trainer):
         ## z,y -> Z,Y (transform)
         Z = self._preprocess(z)
         Y = self._preprocess(y)
+        Y_lr = Y[:,:,:self.lr_freq_bins,:]
+        Y_hr = Y[:,:,self.lr_freq_bins:, :]
+        Z_lr = Z[:, :, :self.lr_freq_bins, :]   # Ground-truth LR part for reconstruction
+        Z_hr = Z[:, :, self.lr_freq_bins:, :]   # Ground-truth HR part for validation loss
         
         # pdb.set_trace()
         ## Sample t, y, and x
         ## Shape of z
         t = torch.rand([batch_size, 1, 1, 1], device=z.device) # [B,1,1,1]
-        x0 = self.path.sample_source(Z, Y)
-        xt = self.path.sample_xt(x0, Z, Y, t)
+        x0 = self.path.sample_source(Y_hr)
+        xt = self.path.sample_xt(x0, Z_hr, Y_lr, t)
         
         # output
         # pdb.set_trace()
-        output = self.model(xt, t, Y)
-        target = self.path.get_target_vector_field(xt, x0, Z, Y, t)
+        output = self.model(xt, t, Y_lr)
+        target = self.path.get_target_vector_field(xt, x0, Z_hr, Y_lr, t)
         loss = flow_matching_loss(predicted_vf=output, target_vf=target)
         
         ## --- Metric logging
@@ -389,8 +521,9 @@ class STFTTrainer(Trainer):
             with torch.no_grad():
                 ode = VectorFieldODE(net=self.model)
                 solver = TorchDiffeqSolver(ode, method='euler')
-                x0_batch = self.path.sample_source(Z, Y)
-                x1_spec_batch = solver.simulate(x0_batch, ts_metric, y=Y)
+                x0_batch = self.path.sample_source(Y_hr)
+                x1_spec_batch = solver.simulate(x0_batch, ts_metric, y=Y_lr)
+                x1_spec_batch = torch.cat([Y_lr, x1_spec_batch], dim=2)
                 x1_wave_batch = self._postprocess(x1_spec_batch)
                 lsd_metric = log_spectral_distance(z[...,:x1_wave_batch.shape[-1]], x1_wave_batch) 
             
@@ -410,8 +543,12 @@ class STFTTrainer(Trainer):
                 ts = torch.linspace(0, 1, num_steps + 1, device=self.device)
 
                 # --- Run Inference ---
-                x0_sample = self.path.sample_source(Z[0:1], Y_sample)
-                x1_spec = solver.simulate(x0_sample, ts, y=Y_sample)
+                Y_hr = Y_sample[...,self.lr_freq_bins:,:]
+                Y_lr = Y_sample[...,:self.lr_freq_bins,:]
+                
+                x0_sample = self.path.sample_source(Y_hr)
+                x1_spec = solver.simulate(x0_sample, ts, y=Y_lr)
+                x1_spec = torch.cat([Y_lr, x1_spec], dim=2)
                 x1_wave = self._postprocess(x1_spec)
 
                 z_sample_c = z_sample[...,:x1_wave.shape[-1]]
@@ -443,6 +580,7 @@ class STFTTrainer(Trainer):
             'log_payload': log_payload,
         }
         return outdict
+    
     
 
 def main():

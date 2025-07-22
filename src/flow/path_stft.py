@@ -41,10 +41,10 @@ class OriginalCFMPath(ConditionalProbabilityPath):
         super().__init__()
         self.sigma_min = sigma_min
         
-    def sample_source(self, Z, Y):
+    def sample_source(self, Y):
         # Standard Gaussian
         # x0 ~ N(0,1)
-        return torch.randn_like(Z)
+        return torch.randn_like(Y)
 
     def sample_xt(self, x0, Z, Y, t):
         return t*Z + (1 - t + self.sigma_min*t) * x0
@@ -56,7 +56,7 @@ class ReFlowPath(ConditionalProbabilityPath):
     def __init__(self):
         super().__init__()
         
-    def sample_source(self, Z, Y):
+    def sample_source(self, Y):
         # Identical to Y
         return Y
 
@@ -94,7 +94,7 @@ class DataDependentPriorPath(ConditionalProbabilityPath):
         self.register_buffer("sigma_per_freq", sigma_per_freq.view(1, 1, -1, 1)) # [1,1,F,1]
         
             
-    def sample_source(self, Z, Y):
+    def sample_source(self, Y):
         # x_low_freq = Y * self.preserve_mask
         x_low_freq = Y # Y is LR spec 
         noise = torch.randn_like(Y) * self.sigma_per_freq.to(Y.device)

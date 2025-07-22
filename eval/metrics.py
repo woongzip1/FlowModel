@@ -1,277 +1,108 @@
-### function that forwards and save functions
-### model forward after N-steps and save audio files
-
 import os
+import argparse
 import torch
 import torchaudio
 import numpy as np
-import argparse
-import time
-import soundfile as sf
-
 from tqdm import tqdm
-from IPython.display import Audio, display
 
-# --- Assumed project structure for imports ---
-from data.dataset import prepare_dataloader 
-from src.models.seanet import GeneratorSeanet 
-from src.flow.path import DataLoaderConditionalProbabilityPath, LinearAlpha, LinearBeta, LinearSigmaBeta
-from src.trainer.trainer import WaveTrainer 
-from src.utils.utils import print_config, draw_2d_heatmap, draw_spec, t2n
-from train import load_config
+def stft(audio, n_fft=2048, hop_length=512):
+    hann_window = torch.hann_window(n_fft).to(audio.device)
+    stft_spec = torch.stft(audio, n_fft, hop_length, window=hann_window, return_complex=True)
+    stft_mag = torch.abs(stft_spec)
+    stft_pha = torch.angle(stft_spec)
 
-### Forward ODE
-from torch import Tensor
-from src.flow.solver import ODE, EulerSolver, VectorFieldODE
-from src.flow.path import ConditionalVectorFieldModel
-from src.models.seanet import GeneratorSeanet
-from src.trainer.trainer import WaveTrainer
-from src.utils.utils import plot_signals
+    return stft_mag, stft_pha
 
-## models
-## dataset
-## main utils
 
-def set_seed(seed=42):
-    torch.manual_seed(seed)
-    np.random.seed(seed)
+def cal_snr(pred, target):
+    snr = (20 * torch.log10(torch.norm(target, dim=-1) / torch.norm(pred - target, dim=-1).clamp(min=1e-8))).mean()
+    return snr
 
-def load_model_params(model, checkpoint_path, device='cuda'):
-    model = model.to(device)
-    print(f"Loading '{checkpoint_path}...'")
-    ckpt = torch.load(checkpoint_path)
-    # import pdb
-    model.load_state_dict(ckpt['model_state_dict'], strict=False)
+
+def cal_lsd(pred, target):
+    sp = torch.log10(stft(pred)[0].square().clamp(1e-8))
+    st = torch.log10(stft(target)[0].square().clamp(1e-8))
+    return (sp - st).square().mean(dim=1).sqrt().mean()
+
+
+def anti_wrapping_function(x):
+    return x - torch.round(x / (2 * np.pi)) * 2 * np.pi
+
+
+def cal_apd(pred, target):
+    pha_pred = stft(pred)[1]
+    pha_target = stft(target)[1]
+    dim_freq = 1025
+    dim_time = pha_pred.size(-1)
+
+    gd_matrix = (torch.triu(torch.ones(dim_freq, dim_freq), diagonal=1) - torch.triu(torch.ones(dim_freq, dim_freq), diagonal=2) - torch.eye(dim_freq)).to(device)
+    gd_r = torch.matmul(pha_target.permute(0, 2, 1), gd_matrix)
+    gd_g = torch.matmul(pha_pred.permute(0, 2, 1), gd_matrix)
+
+    iaf_matrix = (torch.triu(torch.ones(dim_time, dim_time), diagonal=1) - torch.triu(torch.ones(dim_time, dim_time), diagonal=2) - torch.eye(dim_time)).to(device)
+    iaf_r = torch.matmul(pha_target, iaf_matrix)
+    iaf_g = torch.matmul(pha_pred, iaf_matrix)
+
+    apd_ip = anti_wrapping_function(pha_pred - pha_target).square().mean(dim=1).sqrt().mean()
+    apd_gd = anti_wrapping_function(gd_r - gd_g).square().mean(dim=1).sqrt().mean()
+    apd_iaf = anti_wrapping_function(iaf_r - iaf_g).square().mean(dim=1).sqrt().mean()
+
+    return apd_ip, apd_gd, apd_iaf
+
+
+def main(h):
+
+    wav_indexes = os.listdir(h.reference_wav_dir)
     
-    print(f"Model loaded from {checkpoint_path}")
-    return model
+    metrics = {'lsd':[], 'apd_ip': [], 'apd_gd': [], 'apd_iaf': [], 'snr':[]}
 
-def setup_model_and_solver(config, ckpt_path, device):
-    """
-    Initializes the model, ODE solver, and probability path.
-    """
-    # Load the model
-    model = GeneratorSeanet(**config['model']).to(device)
-    model.load_state_dict(torch.load(ckpt_path, map_location=device)['model_state_dict'])
-    model.eval()
+    for wav_index in tqdm(wav_indexes):
 
-    # Setup the probability path for defining the ODE
-    alpha = LinearAlpha()
-    beta = LinearBeta()
-    gaussian_path = DataLoaderConditionalProbabilityPath(
-        p_simple_shape=[1, config['dataset']['common']['num_samples']], # Use segment length from config
-        alpha=alpha,
-        beta=beta,
-    ).to(device)
-
-    # Setup the ODE and Solver
-    ode = VectorFieldODE(net=model)
-    # If using Classifier-Free Guidance:
-    # ode = CFGVectorFieldODE(net=model, guidance_scale=3.0)
-    solver = EulerSolver(ode)
-    
-    return model, solver, gaussian_path
-
-def run_ode_inference(solver, gaussian_path, lr_audio, num_timesteps=50, device='cuda'):
-    """
-    Runs the ODE simulation for a single low-resolution audio input.
-    lr_audio: Low-resolution audio tensor, shape [1, 1, L_lr]
-    """
-    # Ensure input is correctly shaped [Batch, Channel, Length]
-    if lr_audio.dim() == 2:
-        lr_audio = lr_audio.unsqueeze(0) # Add batch dimension if missing
-    
-    condition_y = lr_audio.to(device)
-
-    # 1. Sample initial noise from the prior distribution (Gaussian)
-    # The shape should match the target high-resolution audio.
-    # Here we assume the target length is known from config.
-    # Note: If your model upsamples, the noise shape should match the final output shape.
-    
-    # x0 = gaussian_path.p_simple.sample(1).to(device)
-    x0 = torch.randn_like(condition_y).to(device)
-
-    # 2. Define the integration timesteps from t=0 to t=1
-    ts = torch.linspace(0, 1, num_timesteps).view(1, -1, 1, 1).expand(x0.shape[0], -1, 1, 1).to(device)
-
-    # 3. Solve the ODE
-    with torch.no_grad():
-        generated_audio = solver.simulate(x0, ts=ts, y=condition_y) # x1 is the result at t=1
-
-    # Return the final generated audio, remove batch and channel dims for saving
-    return generated_audio.squeeze(0).squeeze(0).cpu()
-
-def inference_single_file(config, ckpt_path, idx_to_test=0, exp_name='ode_results', num_timesteps=50, device='cuda'):
-    """
-    Runs inference on a single file from the dataset for quick testing and debugging.
-    """
-    print(f"--- Running inference for single file (index: {idx_to_test}) ---")
-    
-    # Setup
-    model, solver, gaussian_path = setup_model_and_solver(config, ckpt_path, device)
-    _, val_loader = prepare_dataloader(config)
-    val_dataset = val_loader.dataset
-    
-    # Get a single data point
-    outdict= val_dataset[idx_to_test]
-    lr_wave = outdict['lr_wave']
-    hr_wave = outdict['hr'] 
-    name = outdict['filename']
-
-    # Run inference
-    print(f"Generating audio for: {name}")
-    start_time = time.time()
-    generated_wave = run_ode_inference(solver, gaussian_path, lr_wave, num_timesteps, device)
-    duration = time.time() - start_time
-    print(f"Inference took {duration:.2f} seconds.")
-
-    save_dir = os.path.join(config['inference']['dir_speech'], exp_name)
-    os.makedirs(save_dir, exist_ok=True)
-    os.makedirs(f'{save_dir}/lr', exist_ok=True)
-    os.makedirs(f'{save_dir}/gen', exist_ok=True)
-    os.makedirs(f'{save_dir}/gt', exist_ok=True)
-    
-    # Save lr file
-    lr_file = os.path.join(save_dir, "lr",f"{name}.wav")
-    sf.write(lr_file, lr_wave.squeeze().numpy(), config['dataset']['common']['sr'], 'PCM_16')
-    print(f"Saved lr audio to: {lr_file}")
-
-    # Save the generated file
-    output_file = os.path.join(save_dir, "gen", f"{name}.wav")
-    sf.write(output_file, generated_wave.numpy(), config['dataset']['common']['sr'], 'PCM_16')
-    print(f"Saved generated audio to: {output_file}")
-
-    # Save ground truth for comparison
-    gt_file = os.path.join(save_dir, "gt", f"{name}.wav")
-    sf.write(gt_file, hr_wave.squeeze().numpy(), config['dataset']['common']['sr'], 'PCM_16')
-    print(f"Saved ground truth audio to: {gt_file}")
-    
-def inference_full_dataset(config, ckpt_path, exp_name='ode_results', num_timesteps=50, device='cuda'):
-    """
-    Runs inference on the entire validation set and saves the output files.
-    This is equivalent to your original GAN inference script.
-    """
-    print(f"--- Running inference for full dataset ---")
-    set_seed(1234)
-
-    # Setup
-    model, solver, gaussian_path = setup_model_and_solver(config, ckpt_path, device)
-    _, val_loader = prepare_dataloader(config)
-
-    # Prepare save directories
-    save_base_dir = os.path.join(config['inference']['dir_speech'], exp_name)
-    save_gen_dir = os.path.join(save_base_dir, 'generated')
-    save_lr_dir = os.path.join(save_base_dir, 'lr')
-    save_gt_dir = os.path.join(save_base_dir, 'gt')
-    os.makedirs(save_gen_dir, exist_ok=True)
-    os.makedirs(save_gt_dir, exist_ok=True)
-    
-    total_duration = 0
-    
-    for outdict in tqdm(val_loader):
-        lr_wave = outdict['lr_wave']
-        hr_wave = outdict['hr'] 
-        name = outdict['file_name']
-        # The name is usually a tuple, so get the first element
-        filename = name[0]
-
-        # Run inference
-        start_time = time.time()
-        generated_wave = run_ode_inference(solver, gaussian_path, lr_wave, num_timesteps, device)
-        total_duration += time.time() - start_time
-
-        # Save lr file
-        lr_file = os.path.join(save_lr_dir, f"{filename}.wav")
-        sf.write(lr_file, lr_wave.numpy(), config['dataset']['common']['sr'])
+        ref_wav, ref_sr = torchaudio.load(os.path.join(h.reference_wav_dir, wav_index))
+        syn_wav, syn_sr = torchaudio.load(os.path.join(h.synthesis_wav_dir, wav_index))
         
-        # Save generated file
-        output_file = os.path.join(save_gen_dir, f"{filename}.wav")
-        sf.write(output_file, generated_wave.numpy(), config['dataset']['common']['sr'])
-        
-        # Save ground truth file
-        gt_file = os.path.join(save_gt_dir, f"{filename}.wav")
-        sf.write(gt_file, hr_wave.squeeze().numpy(), config['dataset']['common']['sr'])
+        length = min(ref_wav.size(1), syn_wav.size(1))
+        ref_wav = ref_wav[:, : length].to(device)
+        syn_wav = syn_wav[:, : length].to(device)
+        ref_wav = ref_wav.to(device)
+        syn_wav = syn_wav[:, : ref_wav.size(1)].to(device)
 
-    avg_duration = total_duration / len(val_loader)
-    print("\n--- Inference Complete ---")
-    print(f"Saved {len(val_loader)} files to: {save_gen_dir}")
-    print(f"Average inference time per file: {avg_duration:.2f} seconds.")
-    
+        lsd_score = cal_lsd(syn_wav, ref_wav)
+        apd_score = cal_apd(syn_wav, ref_wav)
+        snr_score = cal_snr(syn_wav, ref_wav)
 
-# def inference(config, device='cuda', save_gt=False, exp_name='', log_term=10,):
-#     # speech / audio
-#     save_base_dir = os.path.join(config['inference']['dir_speech'], exp_name)
-#     # save_base_dir = os.path.join(config['inference']['dir_audio'], exp_name)
-#     os.makedirs(save_base_dir, exist_ok=True)
 
-#     # dataloader
-#     _, val_loader = prepare_dataloader(config)
-#     # model
-#     config_path = "./ckpts/best_model.pth"
-#     model = GeneratorSeanet(**config.model)
-#     model = WaveTrainer.load_model_params(model, config_path)
-    
-#     alpha = LinearAlpha()
-#     beta = LinearBeta()
-    
-#     gaussian_path = DataLoaderConditionalProbabilityPath(
-#                         p_simple_shape=[1,40192],
-#                         # p_simple_shape=[1,38400],
-#                         alpha=alpha,
-#                         beta=beta,
-#     ).to(device)
-    
-#     x0 = gaussian_path.p_simple.sample(1)
-#     y = outdict['lr_wave'].unsqueeze(0).to(device)
-#     z = outdict['hr'].unsqueeze(0)
+        metrics['lsd'].append(lsd_score)
+        metrics['apd_ip'].append(apd_score[0])
+        metrics['apd_gd'].append(apd_score[1])
+        metrics['apd_iaf'].append(apd_score[2])
+        metrics['snr'].append(snr_score)
 
-#     set_seed()
-#     ## forward
-#     model.eval()
-#     bar = tqdm(val_loader)
-#     duration_tot = 0
-#     with torch.no_grad():
-#         for idx, batch in enumerate(bar):
-#             waveform, name = batch[0].to(device), batch[1]
 
-#             if idx % log_term == 0: # 10
-            
-#                 # forward
-#                 pred_start = time.time() # tick
-#                 audio_gen, _, _ = _forward_pass(waveform, model, config)
-#                 duration_tot += time.time() - pred_start # tock
-                
-#                 # save
-#                 output_file = os.path.join(save_base_dir, name[0]+'.wav')
-#                 sf.write(output_file, audio_gen[0].squeeze().cpu().numpy(), 24000, 'PCM_16')
+    lsd_mean = torch.stack(metrics['lsd'], dim=0).mean()
+    apd_ip_mean = torch.stack(metrics['apd_ip'], dim=0).mean()
+    apd_gd_mean = torch.stack(metrics['apd_gd'], dim=0).mean()
+    apd_iaf_mean = torch.stack(metrics['apd_iaf'], dim=0).mean()
+    snr_mean = torch.stack(metrics['snr'], dim=0).mean()
 
-#                 if save_gt:
-#                     gt_file = os.path.join(save_base_dir, 'gt', name[0]+'.wav')
-#                     os.makedirs(os.path.dirname(gt_file), exist_ok=True)
-#                     sf.write(gt_file, waveform[0].squeeze().cpu().numpy(), 24000, 'PCM_16')
+    print('LSD: {:.3f}'.format(lsd_mean))
+    print('SNR: {:.3f}'.format(snr_mean))
+    print('APD_IP: {:.3f}'.format(apd_ip_mean))
+    print('APD_GD: {:.3f}'.format(apd_gd_mean))
+    print('APD_IAF: {:.3f}'.format(apd_iaf_mean))
 
-def main():
-    print("Initializing Inference Process...")
+if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, required=True, help="Path to the configuration file.")
-    parser.add_argument("--exp_name", type=str, default='')
-    parser.add_argument("--save_gt", type=bool, default=False)
-    parser.add_argument("--device", type=str, default='cuda')
-    parser.add_argument("--log_term", type=int, default=10)
-    
-    args = parser.parse_args()
 
-    # DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-    DEVICE = 'cuda'
-    config = load_config(args.config)
-    # ckpt_path = "./ckpts/best_model.pth"
-    ckpt_path = os.path.join(config.train.ckpt_save_dir, "best_model.pth")
-    
-    for ode_steps in [50]:
-        # for idx_to_test in np.arange(0, 2000, 100):
-        for idx_to_test in np.arange(0, 400, 100):
-            inference_single_file(config, ckpt_path, idx_to_test=idx_to_test, num_timesteps=30, device=DEVICE, exp_name=f'{ode_steps}')
-    # inference(config, device=args.device, save_gt=args.save_gt, exp_name=args.exp_name, log_term=args.log_term)
+    parser.add_argument('--reference_wav_dir', default='./inference/1-2cfm/euler/2/gt')
+    parser.add_argument('--synthesis_wav_dir', default='./inference/1-2cfm/midpoint/20/gen')
 
-if __name__ == "__main__":
-    main()
+    h = parser.parse_args()
+
+    global device
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    else:
+        device = torch.device('cpu')
+
+    main(h)

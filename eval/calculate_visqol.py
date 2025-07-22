@@ -8,6 +8,10 @@ from eval.visqol.visqol_wrapper import ViSQOL
 MODE = "speech"
 MODE = "audio"
 
+"""
+refer to visqol_wrapper repo
+"""
+
 def main():
     # Define the path to the folder where ViSQOL was built
     VISQOL_FOLDER_PATH = os.path.expanduser("~/tools/visqol")
