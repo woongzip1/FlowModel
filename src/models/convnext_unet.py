@@ -156,7 +156,6 @@ class BlockWithEmbedding(nn.Module):
             nn.Linear(time_embed_dim, dim),
         )
     def forward(self, x, t_embed):
-        pdb.set_trace()
         t_embed = self.time_adapter(t_embed).unsqueeze(-1).unsqueeze(-1) # [B,C,1,1]
         x = x + t_embed
         x = self.block(x)

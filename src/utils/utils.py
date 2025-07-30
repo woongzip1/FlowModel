@@ -51,7 +51,7 @@ def _worker_init_fn(worker_id):
 ## Visualize data
 def draw_spec(x,
               figsize=(7,4), title='', n_fft=2048,
-              win_len=1024, hop_len=256, sr=16000, cmap='inferno',
+              win_len=1024, hop_len=512, sr=16000, cmap='inferno',
               window='hann',
               vmin=-50, vmax=40, use_colorbar=False,
               ylim=None,
@@ -94,8 +94,9 @@ def draw_spec(x,
         plt.show()
         return stft
     
-def draw_2d_heatmap(spectrum: torch.tensor, cmap='inferno', vmin=None, vmax=None, 
-                    figsize=(7,4), ylim=None, save_path='save.png', show_fig=True,
+def draw_2d_heatmap(spectrum: torch.tensor, cmap='inferno', vmin=None, vmax=None, title=None,
+                    figsize=(7,4), ylim=None, 
+                    save_fig=False, save_path='save.png', show_fig=True,
                     sr=24000, use_colorbar=True):
     # spectrum [F,T]
     assert spectrum.squeeze().dim()==2, \
@@ -121,10 +122,14 @@ def draw_2d_heatmap(spectrum: torch.tensor, cmap='inferno', vmin=None, vmax=None
     plt.xlabel('Frame', fontsize=8)
     plt.ylabel('Frequency', fontsize=8)
 
+    if title:
+        plt.title(title)
     if ylim:
         plt.ylim(ylim)
     plt.tight_layout()
-    # plt.savefig(save_path)
+    if save_fig:
+        plt.savefig(save_path)
+        return 
     if show_fig:
         plt.show()
     else:

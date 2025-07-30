@@ -76,7 +76,7 @@ class VectorFieldODE(ODE):
         self.net = net
         
     def drift_coefficient(self, xt: torch.Tensor, t: torch.Tensor, y: torch.Tensor, **kwargs) -> torch.Tensor:
-        return self.net(xt, t, y)
+        return self.net(xt, t, y, **kwargs)
     
 class CFGVectorFieldODE(ODE):
     """ For Classifier Free Guidance """

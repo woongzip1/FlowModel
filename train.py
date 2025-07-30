@@ -13,11 +13,15 @@ from box import Box
 from torchinfo import summary
 
 # --- Assumed project structure for imports ---
-from data.dataset import prepare_dataloader # Using the dataloader function from your core logic
+# from data.dataset import prepare_dataloader 
+from data.dataset_idx import prepare_dataloader 
+
 from src.models.seanet import GeneratorSeanet # The model from your core logic
 from src.flow.path import DataLoaderConditionalProbabilityPath, DataLoaderConditionalProbabilityPathWithPrior, LinearAlpha, LinearBeta, LinearSigmaBeta
 from src.trainer.trainer import WaveTrainer, CFGWaveTrainer, WaveTrainerWithPrior
 from src.trainer.stft_trainer import STFTTrainer
+from src.trainer.stft_trainer_mask import STFTTrainerMask
+
 
 from src.utils.utils import print_config  # Assuming you have a print_config utility
 from src.utils.spectral_ops import InvertibleFeatureExtractor, AmplitudeCompressedComplexSTFT
@@ -25,6 +29,7 @@ from src.utils.logger import BaseLogger, get_logger
 
 from src.models.convnext_unet import ConvNeXtUNet, ConditionalVectorFieldModel
 from src.models.convnext_unet_condition import ConvNeXtUNetCond
+from src.models.unetv3 import ConvNeXtUNetFiLM
 from src.flow.path_stft import get_path
 
 
@@ -112,18 +117,23 @@ def main():
     transform = AmplitudeCompressedComplexSTFT(**config.transform)
     path = get_path(config.path)
     # model = ConvNeXtUNet(**config.model)
-    model = ConvNeXtUNetCond(**config.model)
+    # model = ConvNeXtUNetCond(**config.model)
+    model = ConvNeXtUNetFiLM(**config.model)
     
-    ## Dummy input
-    # summary(
-    #     model,
-    #     input_data=[torch.randn(1,2,512,65), torch.rand(1), torch.randn(1,2,512,65)],
-    #     depth=4,
-    #     col_names=["input_size", "output_size", "num_params"],
-    #     verbose=1
-    # )
+    # Dummy input
+    # try:
+    #     summary(
+    #         model,
+    #         input_data=[torch.randn(1,2,512,65), torch.rand(1), 
+    #                     torch.randn(1,2,512,65), torch.ones(1, dtype=torch.int)*8],
+    #         depth=4,
+    #         col_names=["input_size", "output_size", "num_params"],
+    #         verbose=1
+    #     )
+    # except:
+    #     print("Summary passed")
     
-    trainer = STFTTrainer(
+    trainer = STFTTrainerMask(
                         path=path,
                         model=model,
                         train_loader=train_loader,

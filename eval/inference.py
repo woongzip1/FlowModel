@@ -30,6 +30,7 @@ from src.flow.path import ConditionalVectorFieldModel
 from src.flow.path_stft import get_path
 from src.models.seanet import GeneratorSeanet
 from src.models.convnext_unet import ConvNeXtUNet
+from src.models.convnext_unet_condition import ConvNeXtUNetCond
 from src.trainer.trainer import WaveTrainer
 from src.utils.utils import plot_signals
 from src.utils.logger import get_logger
@@ -58,7 +59,8 @@ def setup_model_and_solver(config, ckpt_path, method='euler', device='cuda'):
     Initializes the model, ODE solver, and probability path.
     """
     # Load the model
-    model = ConvNeXtUNet(**config.model).to(device)
+    model = ConvNeXtUNetCond(**config.model).to(device)
+    # model = ConvNeXtUNet(**config.model).to(device)
     model = STFTTrainer.load_model_for_inference(model, ckpt_path, device=device)
     model.eval()
 
@@ -93,15 +95,28 @@ def run_ode_inference(solver, trainer, lr_audio, num_timesteps=50, device='cuda'
     # Condition
     condition_y = lr_audio.to(device)
     Y = trainer._preprocess(waveform=condition_y)
-
-    # Source    
-    x0 = trainer.path.sample_source(Y).to(device)
-    ts = torch.linspace(0, 1, num_timesteps+1)
-
-    # ODE
+    
+    ## ---- Additional processing for LR concat
+    lr_freq_bins =  80
+    Y_lr = Y[...,:lr_freq_bins,:]
+    Y_hr = Y[...,lr_freq_bins:,:]
+    
+    x0_sample = trainer.path.sample_source(Y_hr).to(device)
+    ts = torch.linspace(0,1,num_timesteps+1)
     with torch.no_grad():
-        generated_audio = solver.simulate(x0, ts=ts, y=Y) # x1 is the result at t=1
-    generated_audio = trainer._postprocess(generated_audio)
+        x1_spec = solver.simulate(x0_sample, ts=ts,y=Y_lr)
+    x1_spec = torch.cat([Y_lr, x1_spec], dim=2)
+    generated_audio = trainer._postprocess(x1_spec)
+    ## ----
+
+    # # Source    
+    # x0 = trainer.path.sample_source(Y).to(device)
+    # ts = torch.linspace(0, 1, num_timesteps+1)
+
+    # # ODE
+    # with torch.no_grad():
+    #     generated_audio = solver.simulate(x0, ts=ts, y=Y) # x1 is the result at t=1
+    # generated_audio = trainer._postprocess(generated_audio)
 
     # Return the final generated audio, remove batch and channel dims for saving
     return generated_audio.squeeze(0).squeeze(0).cpu()
@@ -275,7 +290,7 @@ def main():
     # ckpt_path = "./ckpts/best_model.pth"
     ckpt_path = os.path.join(config.train.ckpt_save_dir, "best_model.pth")
     
-    for ode_steps in [10, 25]:
+    for ode_steps in [2, 5, 10, 20, 40,]:
         # for idx_to_test in np.arange(0, 2000, 100):
         for idx_to_test in np.arange(0, 800+1, 80):
             inference_single_file(config, ckpt_path, idx_to_test=idx_to_test, 

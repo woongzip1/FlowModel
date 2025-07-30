@@ -106,6 +106,35 @@ class DataDependentPriorPath(ConditionalProbabilityPath):
     
     def get_target_vector_field(self, xt: torch.Tensor, x0: torch.Tensor, Z: torch.Tensor, Y: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         return Z - (1 - self.sigma_min) * x0
+    
+class MaskedCFMPath(ConditionalProbabilityPath):
+    def __init__(self,
+        sigma_min: float = 1e-4,
+    ):
+        super().__init__()
+        self.sigma_min = sigma_min
+            
+    def sample_source(self, Y_lr, hr_mask):
+        """
+        Y_lr : [B,2,F,T] (hr frequency masked)
+        lr_mask : [B,1,F,1] // or sr_values
+        
+        returns: 
+        X0 : [B,2,F,T] all the LR spectrum is preserved, and HR is Standard Gaussian Noise
+        """
+        noise = torch.randn_like(Y_lr)
+        x0 = Y_lr + noise * hr_mask
+        return x0
+    
+    def sample_xt(self, x0, Z, Y, t):
+        """
+        need not to be modified
+        """
+        return t * Z + (1 - t + self.sigma_min*t) * x0
+    
+    def get_target_vector_field(self, xt: torch.Tensor, x0: torch.Tensor, Z: torch.Tensor, Y: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        return Z - (1 - self.sigma_min) * x0
+
 
 def get_path(config):
     class_path = config.get("class_path")

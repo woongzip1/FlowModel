@@ -282,29 +282,32 @@ class Block(nn.Module):
         x = input + self.drop_path(x) # Residual connection
         return x
 
-class BlockWithEmbedding(nn.Module):
-    """ ConvNeXt block with time embedding injection
-    """
-    def __init__(self, dim, drop_path=0., time_embed_dim=128):
+class ConditionedConvNeXtBlock(nn.Module):
+    def __init__(self, dim, cond_dim, drop_path=0.):
         super().__init__()
         self.block = Block(dim, drop_path)
-        self.time_adapter = nn.Sequential(
-            nn.Linear(time_embed_dim, time_embed_dim),
-            nn.SiLU(),
-            nn.Linear(time_embed_dim, dim),
-        )
-    def forward(self, x, t_embed):
-        t_embed = self.time_adapter(t_embed).unsqueeze(-1).unsqueeze(-1) # [B,C,1,1]
-        x = x + t_embed
-        x = self.block(x)
+        # FiLM Generator
+        self.cond_projector = nn.Conv2d(cond_dim, dim*2, 1)
         
+    def forward(self, x, cond):
+        """ x : [B,C,H,W]
+            t_embed : [B,cond_dim,H,W]
+        """
+        # FiLM
+        proj_output = self.cond_projector(cond) # [B,Cx2,H,W]
+        scale, shift = torch.chunk(proj_output, 2, dim=1)
+        x = x *(1+scale) + shift         
+        # ConvNeXt
+        x = self.block(x)        
         return x
 
 class EncoderBlock(nn.Module):
-    def __init__(self, dim_in, dim_out, num_blocks, drop_path, time_embed_dim):
+    """ Stack of ConvNeXt blocks followed by downsampling
+    """
+    def __init__(self, dim_in, dim_out, num_blocks, drop_path, cond_dim):
         super().__init__()
         self.blocks= nn.ModuleList(
-            [BlockWithEmbedding(dim_in, drop_path, time_embed_dim) 
+            [ConditionedConvNeXtBlock(dim_in, cond_dim, drop_path) 
              for _ in range(num_blocks)]
         )
         self.downsampler = nn.Sequential(
@@ -312,70 +315,176 @@ class EncoderBlock(nn.Module):
             nn.Conv2d(dim_in, dim_out, kernel_size=2, stride=2),
         )
     
-    def forward(self, x, t_emb):
+    def forward(self, x, cond):
+        """ x : [B,C,H,W]
+            cond : [B,D,H,W]
+        """
         for block in self.blocks:
-            x = block(x, t_emb)
+            x = block(x, cond)
         x = self.downsampler(x)
         return x
         
 class Midcoder(nn.Module):
-    def __init__(self, dim, num_blocks, drop_path, time_embed_dim):
+    def __init__(self, dim, num_blocks, drop_path, cond_dim):
         super().__init__()
         self.blocks = nn.ModuleList(
-            [BlockWithEmbedding(dim, drop_path, time_embed_dim)
+            [ConditionedConvNeXtBlock(dim, cond_dim, drop_path) 
              for _ in range(num_blocks)]    
         )
         
-    def forward(self, x, t_emb):
+    def forward(self, x, cond):
         for block in self.blocks:
-            x = block(x, t_emb)
+            x = block(x, cond)
         return x
     
 class DecoderBlock(nn.Module):
-    def __init__(self, dim_in, dim_out, num_blocks, drop_path, time_embed_dim):
+    def __init__(self, dim_in, dim_out, num_blocks, drop_path, cond_dim):
         super().__init__()
         self.upsampler = nn.ConvTranspose2d(dim_in, dim_out, kernel_size=2, stride=2)
         self.blocks = nn.ModuleList(
-            [BlockWithEmbedding(dim_out, drop_path, time_embed_dim)
+            [ConditionedConvNeXtBlock(dim_out, cond_dim, drop_path) 
             for _ in range(num_blocks)]
         )
-    def forward(self, x, t_emb):
+    def forward(self, x, cond):
         x = self.upsampler(x)
         for block in self.blocks:
-            x = block(x, t_emb)
+            x = block(x, cond)
         return x
-        
-class ConditioningEncoder(nn.Module):
-    def __init__(self, in_freq_bins, cond_dim, num_blocks=3):
+
+class ConditioningEncoder2D(nn.Module):
+    def __init__(self, sr_list, cond_dim, num_blocks=3):
+        self.cond_dim = cond_dim        
+        self.sr_to_f1 = sr_list
+        self.max_f1 = max(sr_list.values())
         """
         Args:
-            in_freq_bins (int): LR spectrum F bins (F1) // variable
+            sr_list (list): A list of possible sampling rates, e.g., [8, 16, 24].
+            cond_dim (int): The main conditioning dimension (D).
+            num_blocks (int): The number of shared 2D ConvNeXt blocks.
+        """
+        super().__init__()
+        # Projection (MOE)
+        self.stems = nn.ModuleDict()
+        for sr, f1 in self.sr_to_f1.items():
+            expert = nn.Sequential(
+                nn.Conv2d(2, cond_dim, kernel_size=3, padding=1),
+                nn.GELU(),
+                nn.Conv2d(cond_dim, cond_dim, kernel_size=3, padding=1),
+            )
+            self.stems[str(sr)] = expert
+        
+        # Backbone Blocks
+        self.blocks = nn.Sequential(*[
+            Block(dim=cond_dim) for _ in range(num_blocks)
+        ])
+        self.freq_pool = nn.AdaptiveAvgPool2d((1,None))
+        
+    def forward(self, y_lr, f_emb, sr_values):
+        """
+        Args:
+            y_lr (Tensor): LR Spec [B, 2, F1, T]
+            f_emb : f_emb [F,D1]
+            sr_values : list of sr values [B]
+        Returns:
+            z (Tensor): Conditioning Emb [B, D1, T]
+        """
+        max_f1 = self.max_f1 # 256
+        B, _, F, T = y_lr.shape
+        y_lr = y_lr[:,:,:max_f1,:]
+        
+        ## --- WARNING: take care of idx False issues, out sum may be 0-tensor
+        out = torch.zeros(B, self.cond_dim, max_f1, T, device=y_lr.device)
+        for sr_str, expert in self.stems.items():
+            idx = [i for i, sr in enumerate(sr_values) if str(sr.item())==sr_str]
+            if not idx: continue
+            y_subset = y_lr[idx]
+            z_subset = expert(y_subset)
+            out[idx] = z_subset
+        
+        # ---- This may be a solution 
+        # for i, sr in enumerate(sr_values):
+        #     key = str(sr)
+        #     if key not in self.stems:
+        #         raise ValueError(f"No expert for sr={sr}, available keys: {list(self.stems.keys())}")
+        #     expert = self.stems[key]
+        #     y_i = y_lr[i:i+1]
+        #     z_i = expert(y_i)
+        #     batch_z.append(z_i)
+        # z = torch.cat(batch_z, dim=0)
+        
+        # ------- fixed F1
+        # f_dim = y_lr.shape[2] # F1
+        # f_dim_str = str(f_dim)
+        # if f_dim_str not in self.stems:
+        #     raise ValueError(f"No expert stem found for F1={f_dim}\
+        #                      Supported: {list(self.stems.keys())}")
+        # selected_stem = self.stems[f_dim_str]        
+        # z = selected_stem(y_lr) # [B,D,F1,T]
+        # ------- fixed F1
+        
+        f_emb = f_emb[:max_f1, :] # [F1,D]
+        f_emb = f_emb.permute(1,0).unsqueeze(0).unsqueeze(-1) # [1,D,F,1]
+        z = out + f_emb
+        
+        z = self.blocks(z)      # [B,D1,F1,T]
+        z = self.freq_pool(z).squeeze(2) # [B,D1,T]
+        return z
+
+class ConditioningEncoder(nn.Module):
+    def __init__(self, sr_list, cond_dim, num_blocks=3):
+        """
+        Args:
+            sr_list (int): LR spectrum F bins (F1) // variable
             cond_dim (int): Out dimension (D1)
         """
         super().__init__()
         # 1. Projection (MOE)
-        self.projection = nn.Conv1d(in_channels=2*in_freq_bins, 
-                                    out_channels=cond_dim, 
-                                    kernel_size=1)
+        self.sr_to_f1 = sr_list
+        self.max_f1 = max(sr_list.values())
+        
+        self.f_emb_proj = nn.Conv2d(in_channels=cond_dim, out_channels=2, kernel_size=1)
+        self.stems = nn.ModuleDict()
+        for sr,f1 in self.sr_to_f1.items():
+            expert = nn.Conv1d(in_channels=2*self.max_f1, out_channels=cond_dim, kernel_size=1)            
+            # expert = nn.Conv1d(in_channels=2*f1, out_channels=cond_dim, kernel_size=1)
+            self.stems[str(sr)] = expert
         
         # Global Spectral Encoder (Conv1D)
-        # 2*F1 -> D0
-        ## Must have long receptive field for F-dim 
         self.blocks = nn.Sequential(*[
             ConvNeXtV2Block(dim=cond_dim, intermediate_dim=cond_dim*3)
             for _ in range(num_blocks)
         ])
         
-    def forward(self, y_lr):
+    def forward(self, y_lr, f_emb, sr_values):
         """
         Args:
-            y_lr (Tensor): LR Spec [B, 2, F1, T]
+            y_lr (Tensor): LR Spec [B, 2, F, T]
+            f_emb : f_emb [F,D] (omitted)
+            sr_values : list of sr values [B]
         Returns:
-            z (Tensor): Conditioning Emb [B, D1, T]
+            z (Tensor): Conditioning Emb [B, D, T]
         """
-        # Reshape for Conv1D
-        z = rearrange(y_lr, "b c f t -> b (c f) t") # [B,2xF,T]
-        z = self.projection(z)  # [B,D1,T]
+        max_f1 = self.max_f1
+        B,_,F,T = y_lr.shape
+        y_lr = y_lr[:,:,:max_f1,:] # [1,2,F1,T]
+        f_emb = f_emb[:max_f1, :].permute(1,0).unsqueeze(0).unsqueeze(-1) # [1,D,F1,1]
+        f_emb = self.f_emb_proj(f_emb) # [B,2,F1,T]
+        y_lr = y_lr + f_emb
+        y_lr = rearrange(y_lr, "b c f t -> b (c f) t") # [B,2xF,T]
+
+        # -- Stem selection
+        batch_z = []        
+        for i, sr in enumerate(sr_values):
+            key = str(sr.item())
+            if key not in self.stems:
+                raise ValueError(f"No expert for sr={sr}, available keys: {list(self.stems.keys())}")
+            expert = self.stems[key]
+            y_i = y_lr[i:i+1]
+            z_i = expert(y_i)
+            batch_z.append(z_i)
+        z = torch.cat(batch_z, dim=0) # [B,D,T]
+        
+        # -- Backbone        
         z = self.blocks(z)      # [B,D1,T]        
         return z
 
@@ -392,50 +501,71 @@ class FrequencyPositionalEmbedding(nn.Module):
     def forward(self):
         return self.embedding
         
-class ConvNeXtUNetCond(ConditionalVectorFieldModel):
+class ConvNeXtUNetFiLM(ConditionalVectorFieldModel):
     def __init__(self, in_channels=2, out_channels=2,
                  dims=[64,128,256,512], depths=[2,2,2,4],
-                 drop_path=0., time_dim=128,
+                 drop_path=0., 
                  cond_dim=256, # D1
-                 lr_freq_bins=80, # F1
-                 hr_freq_bins=432,
+                 sampling_rates={8: 85, 16: 170, 24: 256}, # F1
+                 num_freq_bins=512,
+                 feature_enc_layers=3,
+                 cond_dropout_prob=0.1,
                  ):
         super().__init__()
+        self.dims = dims
         self.strides = 2**len(dims)
-        self.time_embedder = SinusoidalTimeEmbedding(dim=time_dim)
+        self.time_embedder = SinusoidalTimeEmbedding(dim=cond_dim) # [B,D]
+        self.cond_dim = cond_dim
+        self.cond_dropout_prob = cond_dropout_prob
         
-        ## ---
+        ## --- 2D Encoder
+        # self.conditioning_encoder = ConditioningEncoder2D(
+        #     sr_list=sampling_rates,
+        #     cond_dim=cond_dim,
+        #     num_blocks=feature_enc_layers,
+        # )
+        
+        ## --- 1D Encoder
         self.conditioning_encoder = ConditioningEncoder(
-            in_freq_bins=lr_freq_bins,
+            sr_list=sampling_rates,
             cond_dim=cond_dim,
-            num_blocks=3,
+            num_blocks=feature_enc_layers,
         )
+        
+        self.uncond_emb = nn.Parameter(torch.randn(cond_dim))
         self.freq_pos_emb = FrequencyPositionalEmbedding(
-            num_freq_bins=hr_freq_bins,
+            num_freq_bins=num_freq_bins,
             emb_dim=cond_dim,
         )        
         ## ---
         self.init_conv = nn.Sequential(
-                nn.Conv2d(in_channels+cond_dim, dims[0], kernel_size=1),
+                nn.Conv2d(in_channels, dims[0], kernel_size=1),
                 LayerNorm(dims[0], eps=1e-6, data_format="channels_first")
         )
         self.encoders = nn.ModuleList()
         self.decoders = nn.ModuleList()
         
+        ## ---
+        self.cond_downsamplers = nn.ModuleList()
+        for i in range(len(dims)): # #of downsampling steps
+            self.cond_downsamplers.append(
+                nn.Conv2d(cond_dim, cond_dim, kernel_size=3, stride=2, padding=1)
+            )
+        
         # Encoder              
         for i in range(len(depths)):
             dim_in = dims[i]
             dim_out = dims[i+1] if i+1 < len(dims) else dims[i]
-            self.encoders.append(EncoderBlock(dim_in, dim_out, depths[i], drop_path, time_dim))
+            self.encoders.append(EncoderBlock(dim_in, dim_out, depths[i], drop_path, cond_dim))
         
         # Midcoder
-        self.midcoder = Midcoder(dims[-1], depths[-1], drop_path, time_dim)
+        self.midcoder = Midcoder(dims[-1], depths[-1], drop_path, cond_dim)
         
         # Decoder
         for i in reversed(range(len(depths))):
             dim_in = dims[i+1] if i+1 < len(dims) else dims[i]
             dim_out = dims[i]
-            self.decoders.append(DecoderBlock(dim_in, dim_out, depths[i], drop_path, time_dim))
+            self.decoders.append(DecoderBlock(dim_in, dim_out, depths[i], drop_path, cond_dim))
         
         self.final_conv = nn.Conv2d(dims[0], out_channels, kernel_size=1)
         self.apply(self._init_weights)
@@ -454,46 +584,75 @@ class ConvNeXtUNetCond(ConditionalVectorFieldModel):
             f"After padding, time dim:{x.shape(-1)} must be multiples of {self.strides}"        
         return x, pad_len
         
-    def forward(self, x, t, y):
+    def forward(self, x, t, y, sr_values):
         """
         x : x_t noisy spec [B,2,F,T]
         t : time embedding [B,1] or [B] 
-        y : condition lr spectrum [B,2,F,T]
+        y : condition lr spectrum [B,2,F1,T]
+        sr_values : list of sampling rates [B,]
+        
+        (cond) : [B,D,F,T]
         """
         # Pad logic
-        x, pad_len = self._pad_frames(x)
-        y, pad_len = self._pad_frames(y)
-        t_embed = self.time_embedder(t)
-
-        # Spatial Condition
-        y_cond = self.conditioning_encoder(y)   # [B,D1,T]
-        f_emb = self.freq_pos_emb()             # [F2,D1]
-        y_cond = y_cond.unsqueeze(2)                            # [B,D1,1,T]
-        f_emb = f_emb.transpose(0,1).unsqueeze(0).unsqueeze(-1) # [1,D1,F2,1]
-        spatial_cond = y_cond + f_emb
+        ## Check [B,2,F,249]
+        if y.shape[-1] == 249:
+            pass
         
-        x = torch.cat([x, spatial_cond], dim=1) # [B,2+D1,F2,T]
+        x, pad_len = self._pad_frames(x)
+        if pad_len > 0:
+            y = torch.nn.functional.pad(y, [0, pad_len, 0, 0], mode='reflect')
+        B, _, F, T = x.shape
+
+        
+        # Spatial Condition
+        t_embed = self.time_embedder(t)         # [B,D]
+        f_emb = self.freq_pos_emb()             # [F,D]    
+        
+        if y is not None:    # (Training) 
+            y_cond_real = self.conditioning_encoder(y, f_emb, sr_values)   # [B,D,T]    
+            # Uncond token masking
+            if self.training and self.cond_dropout_prob > 0:
+                # random mask for uncond
+                mask = (torch.rand(B, device=x.device) < self.cond_dropout_prob) # [B]
+                uncond = self.uncond_emb.reshape(1,self.cond_dim,1).expand(B,self.cond_dim,T) # [B,D,T]
+                y_cond = torch.where(mask.reshape(B,1,1), uncond, y_cond_real)
+            else:
+                y_cond = y_cond_real
+        else: # Unconditional (inference)
+            y_cond = self.uncond_emb.reshape(1,self.cond_dim,1).expand(B,self.cond_dim,T)
+                
+        t_embed = t_embed.unsqueeze(-1).unsqueeze(-1) # [B,D,1,1]
+        f_emb = f_emb.transpose(0,1).unsqueeze(0).unsqueeze(-1) # [1,D,F,1]
+        y_cond = y_cond.unsqueeze(2)                            # [B,D,1,T]
+        spatial_cond = t_embed + y_cond + f_emb           # [B,D,F,T]
+        
+        # conds list
+        conds = [spatial_cond]
+        for downsampler in self.cond_downsamplers:
+            conds.append(downsampler(conds[-1]))
+            # [conds_full, conds//2, conds//4, conds//8]        
 
         # Initial convolution
         x = self.init_conv(x) # (bs, c_0, 32, 32)
         skip_connections = [x]
         
         # Encoders
-        for encoder in self.encoders:
-            x = encoder(x, t_embed) # (bs, c_i, h, w) -> (bs, c_{i+1}, h // 2, w //2)
+        for i, encoder in enumerate(self.encoders):
+            x = encoder(x, conds[i]) # (bs, c_i, h, w) -> (bs, c_{i+1}, h // 2, w //2)
             skip_connections.append(x)
         
         # Midcoder
-        x = self.midcoder(x, t_embed)
+        x = self.midcoder(x, conds[-1])
 
         # Decoders
-        for decoder in self.decoders:
+        for i, decoder in enumerate(self.decoders):
             skip = skip_connections.pop() # (bs, c_i, h, w)
             if x.shape != skip.shape:
                 # shape mismatching due to downsampling
                 x = nn.functional.interpolate(x, size=skip.shape[2:])
             x = x + skip
-            x = decoder(x, t_embed) # (bs, c_i, h, w) -> (bs, c_{i-1}, 2 * h, 2 * w)
+            cond_level = len(self.dims) - 1 - i # [3,2,1,0] for len 4
+            x = decoder(x, conds[cond_level]) # (bs, c_i, h, w) -> (bs, c_{i-1}, 2 * h, 2 * w)
 
         # Final convolution
         skip = skip_connections.pop()
@@ -506,33 +665,33 @@ class ConvNeXtUNetCond(ConditionalVectorFieldModel):
         return x
 
 """
-input xt (Spectral): [B,2,F2,T]
-
+input xt (Spectral): [B,2,N,T]
 lr condition y: [B,2,F1,T] -> (Reshape) -> [B,2*F1,T]
 
 ------------------
-1. Global Spectral Encoder (Conv1D)
-[B,2*F1,T] -> [B,D0,T]
-
-2. MOE (Linear Projection)
-D0 is a varialbe length depending on LR sampling rate
+1. MOE (Linear Projection)
+F1 is a varialbe length depending on LR sampling rate
 D1 is a fixed-length dimension for conditioning
-[B,D0,T] -> [B,D1,T]
+[B,2*F1,T] -> [B,D1,T]
+
+2. Global Spectral Encoder (Conv1D)
+[B,D1,T] -> [B,D1,T]
 
 3. Freq-bin Encoder
 Add frequency-poisition embedding and dimension
-[B,D1,T] -> [B,D1,F2,T] // dimension of F2 is added
+[B,D1,T] -> [B,D1,N,T] // dimension of N is added
 
 ** Detailed method **
 t_emb : [B,D1,1,1]
-Y_cond: [B,D1,1,T]
+LR_cond: [B,D1,1,T]
 F_emb:  [B,D1,F,1]
 
 sum result : [B,D1,F,T]
 
 4. Conditioning in the VF estimator input
-[xt, y] -> [B,2+D1,F2,T] // throw it back into UNet
-
+xt ->   [B,2,N,T]
+cond -> [B,D1,N,T]
+[xt, y] -> [B,2+D1,N,T] // throw it back into UNet
 """
 
 from torchinfo import summary
@@ -540,26 +699,26 @@ from torchinfo import summary
 def main():
     # Hyperparameters
     batch_size = 2
-    F2 = 432  # High-res FFT bins (NFFT/2)
     F1 = 80   # Low-res LR bins
+    F = 512
     T = 256   # Number of time frames
     cond_dim = 256
 
     # Instantiate the model
-    model = ConvNeXtUNetCond(
+    model = ConvNeXtUNetFiLM(
         in_channels=2,
         out_channels=2,
         dims=[96, 192, 384, 768],
         depths=[2,2,4,2],
         drop_path=0.0,
-        time_dim=256,
         cond_dim=cond_dim,
-        lr_freq_bins=F1,
-        hr_freq_bins=F2,
+        sampling_rates={8: 85, 16: 170, 24: 256},
+        num_freq_bins=F,
+        feature_enc_layers=3,
     )
     
     # Dummy inputs
-    x = torch.randn(batch_size, 2, F2, T)
+    x = torch.randn(batch_size, 2, F, T)
     y = torch.randn(batch_size, 2, F1, T)
     t = torch.randint(0, 1000, (batch_size,))
 
@@ -575,45 +734,3 @@ def main():
 if __name__ == "__main__":
     main()
     
-# # --------- without F2 ------------ #
-# def main():
-#     # Hyperparameters
-#     batch_size = 2
-#     F2 = 432  # High-res FFT bins (NFFT/2)
-#     F1 = 80   # Low-res LR bins
-#     F = 512
-#     T = 256   # Number of time frames
-#     cond_dim = 256
-
-#     # Instantiate the model
-#     model = ConvNeXtUNetCond(
-#         in_channels=2,
-#         out_channels=2,
-#         dims=[96, 192, 384, 768],
-#         depths=[2,2,4,2],
-#         drop_path=0.0,
-#         time_dim=cond_dim,
-#         cond_dim=cond_dim,
-#         lr_freq_bins=F1,
-#         hr_freq_bins=F,
-#     )
-    
-#     # Dummy inputs
-#     x = torch.randn(batch_size, 2, F, T)
-#     y = torch.randn(batch_size, 2, F1, T)
-#     t = torch.randint(0, 1000, (batch_size,))
-
-#     # Print model summary
-#     summary(
-#         model,
-#         input_data=(x, t, y),
-#         depth=3,
-#         col_names=("input_size", "output_size", "num_params", "kernel_size"),
-#         verbose=1
-#     )
-
-# if __name__ == "__main__":
-#     main()
-# # --------- without F2 ------------ #
-
-
