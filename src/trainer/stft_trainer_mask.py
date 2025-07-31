@@ -141,7 +141,7 @@ class Trainer(ABC):
         if self.optimizer is None:
             raise RuntimeError("Optimizer must be initialized before loading a checkpoint.")
 
-        checkpoint = torch.load(ckpt_path, map_location=self.device)
+        checkpoint = torch.load(ckpt_path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.start_epoch = checkpoint['epoch'] + 1
@@ -484,7 +484,7 @@ class STFTTrainerMask(Trainer):
             # ODE Solver
             ode = VectorFieldODE(net=self.model)
             solver = TorchDiffeqSolver(ode, method='euler')
-            for num_steps in [1]:
+            for num_steps in [10, 20, 30]:
                 # for sr_value in torch.tensor([[8], [16], [24]]):     
                     # lr_mask, hr_mask = self._make_mask(sr_value, Z.shape[2], device=self.device)
                     # lr_mask = lr_mask[0:1]
