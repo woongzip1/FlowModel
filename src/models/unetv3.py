@@ -594,12 +594,9 @@ class ConvNeXtUNetFiLM(ConditionalVectorFieldModel):
         (cond) : [B,D,F,T]
         """
         # Pad logic
-        ## Check [B,2,F,249]
-        if y.shape[-1] == 249:
-            pass
-        
+        ## Check [B,2,F,249]       
         x, pad_len = self._pad_frames(x)
-        if pad_len > 0:
+        if pad_len > 0 and y is not None:
             y = torch.nn.functional.pad(y, [0, pad_len, 0, 0], mode='reflect')
         B, _, F, T = x.shape
 
@@ -698,7 +695,7 @@ from torchinfo import summary
 
 def main():
     # Hyperparameters
-    batch_size = 2
+    batch_size = 1
     F1 = 80   # Low-res LR bins
     F = 512
     T = 256   # Number of time frames
@@ -719,13 +716,13 @@ def main():
     
     # Dummy inputs
     x = torch.randn(batch_size, 2, F, T)
-    y = torch.randn(batch_size, 2, F1, T)
+    y = torch.randn(batch_size, 2, F, T)
     t = torch.randint(0, 1000, (batch_size,))
 
     # Print model summary
     summary(
         model,
-        input_data=(x, t, y),
+        input_data=(x, t, y, torch.tensor([8])),
         depth=3,
         col_names=("input_size", "output_size", "num_params", "kernel_size"),
         verbose=1
