@@ -221,14 +221,13 @@ def main():
     parser.add_argument("--sr", type=int, default=8)
     parser.add_argument("--guide", type=float, default=0.0)
     
-    
     args = parser.parse_args()
 
     # DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
     DEVICE = 'cuda'
     config = load_config(args.config)
     # ckpt_path = "./ckpts/best_model.pth"
-    ckpt_path = os.path.join(config.train.ckpt_save_dir, "recent.pth")
+    ckpt_path = os.path.join(config.train.ckpt_save_dir, "best_model.pth")
     
     for ode_steps in [30]:
         # for idx_to_test in np.arange (0, 2000, 100):

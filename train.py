@@ -20,7 +20,9 @@ from src.models.seanet import GeneratorSeanet # The model from your core logic
 from src.flow.path import DataLoaderConditionalProbabilityPath, DataLoaderConditionalProbabilityPathWithPrior, LinearAlpha, LinearBeta, LinearSigmaBeta
 from src.trainer.trainer import WaveTrainer, CFGWaveTrainer, WaveTrainerWithPrior
 from src.trainer.stft_trainer import STFTTrainer
-from src.trainer.stft_trainer_mask import STFTTrainerMask
+# from src.trainer.stft_trainer_mask import STFTTrainerMask
+from src.trainer.stft_trainer_mask_sep import STFTTrainerMask
+
 
 
 from src.utils.utils import print_config  # Assuming you have a print_config utility
@@ -29,7 +31,9 @@ from src.utils.logger import BaseLogger, get_logger
 
 from src.models.convnext_unet import ConvNeXtUNet, ConditionalVectorFieldModel
 from src.models.convnext_unet_condition import ConvNeXtUNetCond
-from src.models.unetv3 import ConvNeXtUNetFiLM
+# from src.models.unetv3 import ConvNeXtUNetFiLM
+from src.models.unetv4 import ConvNeXtUNetFiLM
+
 from src.flow.path_stft import get_path
 
 

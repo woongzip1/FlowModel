@@ -134,6 +134,29 @@ class MaskedCFMPath(ConditionalProbabilityPath):
     
     def get_target_vector_field(self, xt: torch.Tensor, x0: torch.Tensor, Z: torch.Tensor, Y: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         return Z - (1 - self.sigma_min) * x0
+    
+class SeparateCFMPath(ConditionalProbabilityPath):
+    def __init__(self,
+        sigma_min: float = 1e-4,
+    ):
+        super().__init__()
+        self.sigma_min = sigma_min
+            
+    def sample_source(self, shape=[1,2,432,100], device='cuda'):
+        """
+        Generates a standard Gaussian noise tensor from a given shape.
+        """
+        noise = torch.randn(*shape, device=device)
+        return noise
+    
+    def sample_xt(self, x0, z_hr, t):
+        """
+        need not to be modified
+        """
+        return t * z_hr + (1 - t + self.sigma_min*t) * x0
+    
+    def get_target_vector_field(self, x0: torch.Tensor, z_hr: torch.Tensor) -> torch.Tensor:
+        return z_hr - (1 - self.sigma_min) * x0
 
 
 def get_path(config):

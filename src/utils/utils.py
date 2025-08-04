@@ -155,8 +155,8 @@ def print_config(config, indent=0):
             
 ## ---- Metrics adopted from AP-BWE ---- ####
 def log_spectral_distance(ref_audio, syn_audio):
-    spec_pred = torch.log10(stft(syn_audio.squeeze(1))[0].square().clamp(1e-8)) 
-    spec_ref = torch.log10(stft(ref_audio.squeeze(1))[0].square().clamp(1e-8)) 
+    spec_pred = torch.log10(stft(syn_audio.squeeze(1))[0].square().clamp(min=1e-8)) 
+    spec_ref = torch.log10(stft(ref_audio.squeeze(1))[0].square().clamp(min=1e-8)) 
     lsd = (spec_pred - spec_ref).square().mean(dim=1).sqrt().mean()
     return lsd
 
