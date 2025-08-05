@@ -33,15 +33,14 @@ def cal_lsd(pred, target, sr=48000, cutoff_freq=8000):
     st = torch.log10(stft(target)[0].square().clamp(min=1e-6))
     lsd = (sp - st).square().mean(dim=1).sqrt().mean()
     
+    sp_l = sp[..., :bin_idx, :]
+    st_l = st[..., :bin_idx, :]
+    lsd_l = (sp_l - st_l).square().mean(dim=1).sqrt().mean()
+    
     sp_h = sp[..., bin_idx:, :]
     st_h = st[..., bin_idx:, :]
-    # vv = (sp_h - st_h).square()
-    # draw_spec(t2n(pred), save_path='predd', save_fig=True)
-    # draw_2d_heatmap(sp.squeeze(), save_path='pred.png', save_fig=True)
-    # draw_2d_heatmap(st.squeeze(), save_path='ref.png', save_fig=True)
-    # draw_2d_heatmap(vv.squeeze(), save_path='hi.png', save_fig=True)
     lsd_h = (sp_h - st_h).square().mean(dim=1).sqrt().mean()
-    return lsd, lsd_h
+    return lsd, lsd_h, lsd_l
 
 
 def anti_wrapping_function(x):
@@ -73,7 +72,7 @@ def main(h):
 
     wav_indexes = os.listdir(h.reference_wav_dir)
     
-    metrics = {'lsd':[], 'lsd_h':[], 'apd_ip': [], 'apd_gd': [], 'apd_iaf': [], 'snr':[]}
+    metrics = {'lsd':[], 'lsd_h':[], 'lsd_l':[], 'apd_ip': [], 'apd_gd': [], 'apd_iaf': [], 'snr':[]}
 
     for wav_index in tqdm(wav_indexes):
 
@@ -86,12 +85,13 @@ def main(h):
         ref_wav = ref_wav.to(device)
         syn_wav = syn_wav[:, : ref_wav.size(1)].to(device)
 
-        lsd_score, lsd_high_score = cal_lsd(syn_wav, ref_wav,48000, cutoff_freq=h.input_sr)
+        lsd_score, lsd_high_score, lsd_low_score = cal_lsd(syn_wav, ref_wav,48000, cutoff_freq=h.input_sr)
         # apd_score = cal_apd(syn_wav, ref_wav)
         snr_score = cal_snr(syn_wav, ref_wav)
 
         metrics['lsd'].append(lsd_score)
         metrics['lsd_h'].append(lsd_high_score)
+        metrics['lsd_l'].append(lsd_low_score)
         # metrics['apd_ip'].append(apd_score[0])
         # metrics['apd_gd'].append(apd_score[1])
         # metrics['apd_iaf'].append(apd_score[2])
@@ -100,6 +100,7 @@ def main(h):
 
     lsd_mean = torch.stack(metrics['lsd'], dim=0).mean()
     lsdh_mean = torch.stack(metrics['lsd_h'], dim=0).mean()
+    lsdl_mean = torch.stack(metrics['lsd_l'], dim=0).mean()
     # apd_ip_mean = torch.stack(metrics['apd_ip'], dim=0).mean()
     # apd_gd_mean = torch.stack(metrics['apd_gd'], dim=0).mean()
     # apd_iaf_mean = torch.stack(metrics['apd_iaf'], dim=0).mean()
@@ -108,6 +109,8 @@ def main(h):
     print('LSD: {:.3f}'.format(lsd_mean))
     print('SNR: {:.3f}'.format(snr_mean))
     print('LSDH: {:.3f}'.format(lsdh_mean))
+    print('LSDL: {:.3f}'.format(lsdl_mean))
+    
     # print('APD_IP: {:.3f}'.format(apd_ip_mean))
     # print('APD_GD: {:.3f}'.format(apd_gd_mean))
     # print('APD_IAF: {:.3f}'.format(apd_iaf_mean))
