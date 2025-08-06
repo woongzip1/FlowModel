@@ -9,8 +9,12 @@ import numpy as np
 from box import Box
 from matplotlib import pyplot as plt
 
-## t2n n2t
+def count_model_params(model):
+    params = sum(p.numel()for p in model.parameters() if p.requires_grad)
+    params = params / 1_000_000 # M
+    return params
 
+## t2n n2t
 def t2n(x: torch.Tensor) -> np.ndarray :
     return x.detach().cpu().squeeze().numpy()  
 

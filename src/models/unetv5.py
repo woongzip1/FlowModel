@@ -344,7 +344,45 @@ class DecoderBlock(nn.Module):
         for block in self.blocks:
             x = block(x, t_emb)
         return x
+
+class ConditioningEncoder2D(nn.Module):
+    def __init__(self, in_freq_bins, cond_dim, num_blocks=3):
+        super().__init__()       
+        self.cond_dim = cond_dim        
+        self.max_f1 = in_freq_bins
+        self.film_generator = nn.Linear(cond_dim, 4)
+        self.head = nn.Conv2d(2, cond_dim, kernel_size=1)
+        """
+        Args:
+            cond_dim (int): The main conditioning dimension (D).
+            num_blocks (int): The number of shared 2D ConvNeXt blocks.
+        """
+        # Backbone Blocks
+        self.blocks = nn.Sequential(*[
+            Block(dim=cond_dim) for _ in range(num_blocks)
+        ])
+        self.freq_pool = nn.AdaptiveAvgPool2d((1,None))
         
+    def forward(self, y_lr, f_emb_lr, sr_values, sr_emb):
+        """
+        Args:
+            y_lr (Tensor): LR Spec [B, 2, F1, T]
+            f_emb : f_emb [F,D1]
+            sr_values : list of sr values [B]
+        Returns:
+            z (Tensor): Conditioning Emb [B, D1, T]
+        """
+        film_params = self.film_generator(f_emb_lr)
+        gamma, beta = torch.chunk(film_params, chunks=2, dim=-1) # [F1,2]
+        gamma = rearrange(gamma, 'f c -> 1 c f 1')  # [1,2,F1,1]
+        beta = rearrange(beta, 'f c -> 1 c f 1')    # [1,2,F1,1]
+        z = y_lr * gamma + beta # [B, 2, F1, T]
+        
+        z = self.head(z)
+        z = self.blocks(z)      # [B,D1,F1,T]
+        z = self.freq_pool(z).squeeze(2) # [B,D1,T]
+        return z
+    
 class ConditioningEncoder(nn.Module):
     def __init__(self, in_freq_bins, cond_dim, num_blocks=3):
         """
@@ -353,6 +391,8 @@ class ConditioningEncoder(nn.Module):
             cond_dim (int): Out dimension (D1)
         """
         super().__init__()
+        self.max_f1 = in_freq_bins
+        self.film_generator = nn.Linear(cond_dim, 4)
         # 1. Projection (MOE)
         self.projection = nn.Conv1d(in_channels=2*in_freq_bins, 
                                     out_channels=cond_dim, 
@@ -366,13 +406,20 @@ class ConditioningEncoder(nn.Module):
             for _ in range(num_blocks)
         ])
         
-    def forward(self, y_lr):
+    def forward(self, y_lr, f_emb_lr, sr_values, sr_emb):
         """
         Args:
-            y_lr (Tensor): LR Spec [B, 2, F1, T]
+            y (Tensor): Low-resolution conditioning spectrogram [B, 2, F1, T].
+            f_emb_lr (Tensor): [F1,D]
         Returns:
             z (Tensor): Conditioning Emb [B, D1, T]
         """
+        film_params = self.film_generator(f_emb_lr)
+        gamma, beta = torch.chunk(film_params, chunks=2, dim=-1) # [F1,2]
+        gamma = rearrange(gamma, 'f c -> 1 c f 1')  # [1,2,F1,1]
+        beta = rearrange(beta, 'f c -> 1 c f 1')    # [1,2,F1,1]
+        y_lr = y_lr * gamma + beta # [B, 2, F1, T]
+    
         # Reshape for Conv1D
         z = rearrange(y_lr, "b c f t -> b (c f) t") # [B,2xF,T]
         z = self.projection(z)  # [B,D1,T]
@@ -380,17 +427,22 @@ class ConditioningEncoder(nn.Module):
         return z
 
 class FrequencyPositionalEmbedding(nn.Module):
-    def __init__(self, num_freq_bins, emb_dim):
-        """
-        Args:
-            num_freq_bins (int): Spectral bin number (F2)
-            emb_dim (int): Conditioning dim (D1)
-        """
+    def __init__(self, num_bins: int, emb_dim: int):
         super().__init__()
-        self.embedding = nn.Parameter(torch.randn(num_freq_bins, emb_dim)) # [F2, D1]
+        # (F, D)
+        pe = torch.zeros(num_bins, emb_dim)
+        position = torch.arange(num_bins, dtype=torch.float32).unsqueeze(1)  # (F,1)
+        div_term = torch.exp(
+            torch.arange(0, emb_dim, 2, dtype=torch.float32) *
+            -(math.log(10000.0) / emb_dim)
+        )  # (D/2,)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
 
     def forward(self):
-        return self.embedding
+        # returns (F, D)
+        return self.pe        
         
 class ConvNeXtUNetCond(ConditionalVectorFieldModel):
     def __init__(self, in_channels=2, out_channels=2,
@@ -399,21 +451,32 @@ class ConvNeXtUNetCond(ConditionalVectorFieldModel):
                  cond_dim=256, # D1
                  lr_freq_bins=80, # F1
                  hr_freq_bins=432,
+                 feature_enc_layers=10,
+                 cond_dropout_prob=0.1,
+                 sampling_rates={8: 85, 12: 128, 16: 170, 24: 256},
                  ):
         super().__init__()
         self.strides = 2**len(dims)
         self.time_embedder = SinusoidalTimeEmbedding(dim=time_dim)
+        self.sr_values_list = sorted(list(sampling_rates.keys()))       # (8,12,16,24) kHz
+        self.sr_to_idx = {sr: i for i, sr in enumerate(self.sr_values_list)}
+        self.sr_embedder = nn.Embedding(len(self.sr_values_list), cond_dim)   # [4,D]
+        self.lr_freq_bins = lr_freq_bins
+        self.cond_dropout_prob = cond_dropout_prob
+        self.cond_dim = cond_dim
+        self.uncond_emb = nn.Parameter(torch.randn(cond_dim))
+
+        # PE
+        self.freq_pos_enc = FrequencyPositionalEmbedding(num_bins=lr_freq_bins+hr_freq_bins, emb_dim=cond_dim)
+        self.film_generator = nn.Linear(cond_dim, cond_dim * 2)
         
         ## ---
-        self.conditioning_encoder = ConditioningEncoder(
+        self.conditioning_encoder = ConditioningEncoder2D(
             in_freq_bins=lr_freq_bins,
             cond_dim=cond_dim,
-            num_blocks=3,
+            num_blocks=feature_enc_layers,
         )
-        self.freq_pos_emb = FrequencyPositionalEmbedding(
-            num_freq_bins=hr_freq_bins,
-            emb_dim=cond_dim,
-        )        
+
         ## ---
         self.init_conv = nn.Sequential(
                 nn.Conv2d(in_channels+cond_dim, dims[0], kernel_size=1),
@@ -454,7 +517,7 @@ class ConvNeXtUNetCond(ConditionalVectorFieldModel):
             f"After padding, time dim:{x.shape(-1)} must be multiples of {self.strides}"        
         return x, pad_len
         
-    def forward(self, x, t, y):
+    def forward(self, x, t, y, sr_values):
         """
         x : x_t noisy spec [B,2,F,T]
         t : time embedding [B,1] or [B] 
@@ -462,17 +525,43 @@ class ConvNeXtUNetCond(ConditionalVectorFieldModel):
         """
         # Pad logic
         x, pad_len = self._pad_frames(x)
-        y, pad_len = self._pad_frames(y)
-        t_embed = self.time_embedder(t)
-
-        # Spatial Condition
-        y_cond = self.conditioning_encoder(y)   # [B,D1,T]
-        f_emb = self.freq_pos_emb()             # [F2,D1]
-        y_cond = y_cond.unsqueeze(2)                            # [B,D1,1,T]
-        f_emb = f_emb.transpose(0,1).unsqueeze(0).unsqueeze(-1) # [1,D1,F2,1]
-        spatial_cond = y_cond + f_emb
+        if pad_len > 0 and y is not None:
+            y = torch.nn.functional.pad(y, [0, pad_len, 0, 0], mode='reflect')
+        B, _, F, T = x.shape
         
-        x = torch.cat([x, spatial_cond], dim=1) # [B,2+D1,F2,T]
+        pe_full = self.freq_pos_enc()               # [F,D]
+        pe_low = pe_full[:self.lr_freq_bins,:]      # [F1,D]
+        pe_high = pe_full[self.lr_freq_bins:, :]    # [F2,D]
+
+        t_embed = self.time_embedder(t)
+                
+        if y is not None:    # (Training) 
+            # sr embedding
+            sr_indices = torch.tensor([self.sr_to_idx[s.item()] for s in sr_values], device=x.device)
+            sr_emb = self.sr_embedder(sr_indices) # [B, D]
+            y_cond_real = self.conditioning_encoder(y, pe_low, sr_values, sr_emb)   # [B,D,T]    
+            
+            # Uncond token masking
+            if self.training and self.cond_dropout_prob > 0:
+                # random mask for uncond
+                mask = (torch.rand(B, device=x.device) < self.cond_dropout_prob) # [B]
+                uncond = self.uncond_emb.reshape(1,self.cond_dim,1).expand(B,self.cond_dim,T) # [B,D,T]
+                y_cond = torch.where(mask.reshape(B,1,1), uncond, y_cond_real)
+            else:
+                y_cond = y_cond_real
+        else: # Unconditional (inference)
+            y_cond = self.uncond_emb.reshape(1,self.cond_dim,1).expand(B,self.cond_dim,T)
+
+        y_cond = y_cond.unsqueeze(2)                            # [B,D,1,T]
+                
+        # FiLM Conditioning of freq-bins
+        film_params = self.film_generator(pe_high) # [F2,D] -> [F2,2D]
+        gamma_high, beta_high = torch.chunk(film_params, chunks=2, dim=-1) # [F2, D]
+        gamma_high = rearrange(gamma_high, 'f d -> 1 d f 1') # [1,D,F2,1]
+        beta_high = rearrange(beta_high, 'f d -> 1 d f 1')   # [1,D,F2,1]
+        spatial_cond = y_cond * gamma_high + beta_high # [B,D,F2,T]
+        
+        x = torch.cat([x, spatial_cond], dim=1) # [B,2+D,F2,T]
 
         # Initial convolution
         x = self.init_conv(x) # (bs, c_0, 32, 32)
@@ -536,6 +625,7 @@ sum result : [B,D1,F,T]
 """
 
 from torchinfo import summary
+from src.utils.utils import count_model_params
 
 def main():
     # Hyperparameters
@@ -543,8 +633,8 @@ def main():
     F2 = 432  # High-res FFT bins (NFFT/2)
     F1 = 80   # Low-res LR bins
     T = 256   # Number of time frames
-    cond_dim = 256
-
+    cond_dim = 384
+    feature_enc_layers = 12
     # Instantiate the model
     model = ConvNeXtUNetCond(
         in_channels=2,
@@ -554,8 +644,11 @@ def main():
         drop_path=0.0,
         time_dim=256,
         cond_dim=cond_dim,
+        feature_enc_layers=feature_enc_layers,
         lr_freq_bins=F1,
         hr_freq_bins=F2,
+        cond_dropout_prob=0.1,
+        sampling_rates=None,
     )
     
     # Dummy inputs
@@ -563,6 +656,13 @@ def main():
     y = torch.randn(batch_size, 2, F1, T)
     t = torch.randint(0, 1000, (batch_size,))
 
+    # ---
+    # for num_block in [3, 6, 9, 12]:
+    #     model = ConditioningEncoder(in_freq_bins=F1, cond_dim=384, num_blocks=num_block)    
+    #     p = count_model_params(model)
+    #     print(p)
+    # pdb.set_trace()
+    
     # Print model summary
     summary(
         model,
@@ -574,7 +674,7 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+
 # # --------- without F2 ------------ #
 # def main():
 #     # Hyperparameters
