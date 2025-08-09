@@ -115,7 +115,8 @@ def draw_2d_heatmap(spectrum: torch.tensor, cmap='inferno', vmin=None, vmax=None
     im = plt.imshow(spectrum,
                aspect='auto', cmap=cmap, vmin=vmin, vmax=vmax,
                origin='lower', 
-               extent=[0, spectrum.shape[-1], 0, sr//2]
+               extent=[0, spectrum.shape[-1], 0, sr//2],
+            #    interpolation='nearest'
                )
     
     if use_colorbar:

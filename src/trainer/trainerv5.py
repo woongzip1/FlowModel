@@ -12,7 +12,7 @@ from tqdm import tqdm
 from abc import ABC, abstractmethod
 
 from src.flow.path_stft import ConditionalProbabilityPath, ReFlowPath, OriginalCFMPath, DataDependentPriorPath
-from src.flow.losses import flow_matching_loss
+from src.flow.losses import flow_matching_loss, stft_loss
 
 from src.models.convnext_unet import ConvNeXtUNet, ConditionalVectorFieldModel
 from src.utils.spectral_ops import InvertibleFeatureExtractor, AmplitudeCompressedComplexSTFT
@@ -241,7 +241,7 @@ class Trainer(ABC):
                 global_step += 1
                 
                 self.optimizer.zero_grad()
-                loss = self._train_step(batch)
+                loss, loss_dict = self._train_step(batch, global_step)
                 loss.backward()
                 
                 # ---- Gradient logging & clipping ---- 
@@ -261,6 +261,8 @@ class Trainer(ABC):
                 if global_step % log_step_interval == 0:
                     self.logger.log({"model/loss": loss.item()}, step=global_step)
                     self.logger.log({"charts/lr-adam": self.optimizer.param_groups[0]['lr']}, step=global_step)
+                    log_payload = {f"model/{k}": v.item() for k, v in loss_dict.items()}
+                    self.logger.log(log_payload, step=global_step)
                     
                 if global_step % val_step_interval == 0:
                     val_results = self.validate(global_step)
@@ -325,7 +327,7 @@ class STFTTrainer(Trainer):
         waveform = self.transform.invert(spec)
         return waveform
     
-    def _train_step(self, batch_data:dict, **kwargs):
+    def _train_step(self, batch_data:dict, step:int, **kwargs):
         # modified for HR reconstruction
         """
         - batch data
@@ -362,7 +364,32 @@ class STFTTrainer(Trainer):
         target = self.path.get_target_vector_field(xt, x0, Z_hr, Y_lr, t)
         loss = flow_matching_loss(predicted_vf=output, target_vf=target)
         
-        return loss
+        # 1-step inference
+        Z_hr_hat = output + (1 - self.path.sigma_min) * x0
+        Z_hat = torch.cat((Y_lr, Z_hr_hat), dim=2)
+        z_hat = self._postprocess(Z_hat)
+        z_target = self._postprocess(torch.cat((Y_lr, Z_hr), dim=2))
+        # loss_aux = stft_loss(answer=z_target, predict=z_hat, f1_start_bin=(80,160,40))
+        loss_aux = torch.tensor(0)
+
+        loss_total = loss + loss_aux * 0.01
+        loss_dict = {"cfm_loss": loss, "stft_loss": loss_aux}
+        
+        if step % 1000 == 0:
+            with torch.no_grad():
+                z_sample = z_target[0].unsqueeze(0)
+                z_hat_sample = z_hat[0].unsqueeze(0)
+                spec_gt = draw_spec(t2n(z_sample), sr=48000, return_fig=True, )
+                spec_gen = draw_spec(t2n(z_hat_sample), sr=48000, return_fig=True, )
+                sample_logs = {
+                    "train_samples/audio_ground_truth": wandb.Audio(t2n(z_sample), sample_rate=48000),
+                    "train_samples/audio_generated": wandb.Audio(t2n(z_hat_sample), sample_rate=48000),
+                    "train_samples/spec_ground_truth": wandb.Image(spec_gt),
+                    "train_samples/spec_generated": wandb.Image(spec_gen),
+                }
+                self.logger.log(sample_logs, step=step)
+        
+        return loss_total, loss_dict
     
     def _val_step(self, batch_data:dict, idx:int, **kwargs):
         ## modified
@@ -375,6 +402,8 @@ class STFTTrainer(Trainer):
         ## Sample z,y from p_data
         z = batch_data['hr'].to(self.device) # [B,1,T] 
         y = batch_data['lr_wave'].to(self.device)
+        z = z[...,:48000*4]
+        y = y[...,:48000*4]
         sr_values = batch_data['low_sr']  
         batch_size = z.shape[0]
         
@@ -415,7 +444,8 @@ class STFTTrainer(Trainer):
             
         ## --- Sample data logging
         log_payload = {}
-        if idx in [100, 400, 800]:
+        # if idx in [100, 400, 800]:
+        if idx in [1, 5, 10]:
             with torch.no_grad():
                 # print(f"INFO: Generating validation sample for batch index {idx}")
                 # Use the first item in the batch for logging

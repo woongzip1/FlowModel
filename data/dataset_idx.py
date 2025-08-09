@@ -80,7 +80,7 @@ class Dataset(torch.utils.data.Dataset):
         wb_path = self.wb_paths[idx]
         y, sr = torchaudio.load(wb_path)
         if y.size(0) > 1:
-            print("Stereo file detected..")
+            # print("Stereo file detected..")
             y = y.mean(dim=0, keepdim=True)
     
         # gain & normalize        

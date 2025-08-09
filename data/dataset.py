@@ -95,7 +95,7 @@ class Dataset(torch.utils.data.Dataset):
         wb_path = self.wb_paths[idx]
         y, sr = torchaudio.load(wb_path)
         if y.size(0) > 1:
-            print("Stereo file detected..")
+            # print("Stereo file detected..")
             y = y.mean(dim=0, keepdim=True)
     
         # gain & normalize        
@@ -203,4 +203,16 @@ find /ssd/woongzip/dataset_real/GT/MUSDB18_split -name "*.wav" > audio_48.txt
 find /ssd/woongzip/dataset_real/GT/MUSDB18_split -name "*vocals_*.wav" > vocals_48.txt
 
 find /ssd/woongzip/dataset_real/GT/VCTK -name "*.wav" > speech_48.txt
+
+
+for i in $(seq 1 10); do
+    SPEAKER_ID=$(printf "p%03d" $i)
+    find /home/woongzip/Dataset_audio/ears/${SPEAKER_ID} -name "*regular*.wav" >> speech.txt
+done
+
+
+find /home/woongzip/Dataset_audio/expresso/readbase/read -name "*.wav" > expresso.txt
+find /home/woongzip/Dataset_audio/ears/train -name "*.wav" > ears_train.txt
+find /home/woongzip/Dataset_audio/ears/test -name "*.wav" > ears_test.txt
+
 """
