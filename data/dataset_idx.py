@@ -102,7 +102,8 @@ class Dataset(torch.utils.data.Dataset):
                 s = np.random.randint(0, current_signal_len-target_signal_len)
                 y = y[..., s:s+target_signal_len]
         elif self.mode in ['val']:
-            # y = self._ensure(y, 40000, repeat=False)
+            # y = self._ensure(y, 48000*4, repeat=False)
+            y = y[...,:48000*4]
             # y = self._pad(y, self.N)
             y = y
         else:

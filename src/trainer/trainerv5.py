@@ -162,7 +162,7 @@ class Trainer(ABC):
         print(f"Model loaded successfully from {ckpt_path}")
         return model
 
-    def validate(self, global_step):
+    def validate(self, global_step, val_idx):
         """
         Runs a full validation loop, calculates, and returns the average validation loss.
         """
@@ -174,7 +174,7 @@ class Trainer(ABC):
         
         with torch.no_grad():  # Disable gradient calculations
             for idx, batch in enumerate(val_pbar):
-                outdict = self._val_step(batch, idx)
+                outdict = self._val_step(batch, idx, val_idx)
                 loss = outdict['loss']
                 log_data = outdict['log_payload']
                 metric = outdict['lsd']
@@ -211,6 +211,7 @@ class Trainer(ABC):
                 ckpt_load_path: str = None,
                 log_step_interval: int = 100,
                 val_step_interval: int = 5000,
+                val_sample_indices: list = [1, 5, 50],
                 **kwargs):
         """
         Main training loop
@@ -265,7 +266,7 @@ class Trainer(ABC):
                     self.logger.log(log_payload, step=global_step)
                     
                 if global_step % val_step_interval == 0:
-                    val_results = self.validate(global_step)
+                    val_results = self.validate(global_step, val_sample_indices)
                     avg_val_loss = val_results['loss']
                     avg_val_lsd = val_results['lsd']
                     print(f'\nStep {global_step} | Validation Loss: {avg_val_loss:.6f}, Validation LSD: {avg_val_lsd:.4f}\n')
@@ -391,7 +392,7 @@ class STFTTrainer(Trainer):
         
         return loss_total, loss_dict
     
-    def _val_step(self, batch_data:dict, idx:int, **kwargs):
+    def _val_step(self, batch_data:dict, idx:int, val_idx:list, **kwargs):
         ## modified
         """
         Inference per batch and return validaiton loss
@@ -431,7 +432,7 @@ class STFTTrainer(Trainer):
         ## --- Metric logging
         lsd_metric = None
         if idx % 100 == 0:
-            ode_steps = 15
+            ode_steps = 10
             ts_metric = torch.linspace(0, 1, ode_steps+1, device=self.device)
             with torch.no_grad():
                 ode = VectorFieldODE(net=self.model)
@@ -445,7 +446,7 @@ class STFTTrainer(Trainer):
         ## --- Sample data logging
         log_payload = {}
         # if idx in [100, 400, 800]:
-        if idx in [1, 5, 10]:
+        if idx in val_idx:
             with torch.no_grad():
                 # print(f"INFO: Generating validation sample for batch index {idx}")
                 # Use the first item in the batch for logging
@@ -457,7 +458,7 @@ class STFTTrainer(Trainer):
                 # ODE Solver
                 ode = VectorFieldODE(net=self.model)
                 solver = TorchDiffeqSolver(ode, method='midpoint')
-                for num_steps in [5, 30]:
+                for num_steps in [5]:
                     ts = torch.linspace(0, 1, num_steps + 1, device=self.device)
 
                     # --- Run Inference ---

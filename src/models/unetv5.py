@@ -471,7 +471,7 @@ class ConvNeXtUNetCond(ConditionalVectorFieldModel):
         self.film_generator = nn.Linear(cond_dim, cond_dim * 2)
         
         ## ---
-        self.conditioning_encoder = ConditioningEncoder2D(
+        self.conditioning_encoder = ConditioningEncoder(
             in_freq_bins=lr_freq_bins,
             cond_dim=cond_dim,
             num_blocks=feature_enc_layers,
