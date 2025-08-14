@@ -14,9 +14,11 @@ from torchinfo import summary
 
 # --- Assumed project structure for imports ---
 # from data.dataset import prepare_dataloader 
-from data.dataset_idx import prepare_dataloader 
+# from data.dataset_idx import prepare_dataloader 
+from data.dataset_idx_hr import prepare_dataloader 
 
-from src.trainer.trainerv5 import STFTTrainer
+# from src.trainer.trainerv5 import STFTTrainer
+from src.trainer.trainerv6 import STFTTrainer
 
 from src.utils.utils import print_config  # Assuming you have a print_config utility
 from src.utils.spectral_ops import InvertibleFeatureExtractor, AmplitudeCompressedComplexSTFT
@@ -26,7 +28,8 @@ from src.utils.logger import BaseLogger, get_logger
 # from src.models.convnext_unet_condition import ConvNeXtUNetCond
 # from src.models.unetv3 import ConvNeXtUNetFiLM
 # from src.models.unetv4 import ConvNeXtUNetFiLM
-from src.models.unetv5 import ConvNeXtUNetCond
+# from src.models.unetv5 import ConvNeXtUNetCond
+from src.models.unetv6 import ConvNeXtUNetCond
 
 from src.flow.path_stft import get_path
 

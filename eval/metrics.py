@@ -5,6 +5,7 @@ import torchaudio
 import numpy as np
 import pdb
 from tqdm import tqdm
+from torch_peaq import PEAQBasic
 
 from src.utils.utils import draw_2d_heatmap, draw_spec, t2n
 
@@ -72,7 +73,7 @@ def main(h):
 
     wav_indexes = os.listdir(h.reference_wav_dir)
     
-    metrics = {'lsd':[], 'lsd_h':[], 'lsd_l':[], 'apd_ip': [], 'apd_gd': [], 'apd_iaf': [], 'snr':[]}
+    metrics = {'lsd':[], 'lsd_h':[], 'lsd_l':[], 'apd_ip': [], 'apd_gd': [], 'apd_iaf': [], 'snr':[], '2f-model':[]}
 
     for wav_index in tqdm(wav_indexes):
 
@@ -89,9 +90,15 @@ def main(h):
         # apd_score = cal_apd(syn_wav, ref_wav)
         snr_score = cal_snr(syn_wav, ref_wav)
 
+        #
+        peaq_model = PEAQBasic(sampling_rate=48000).to(device)
+        with torch.inference_mode():
+            mms_2f = peaq_model.compute_mms_2f(ref_wav, syn_wav, device)
+
         metrics['lsd'].append(lsd_score)
         metrics['lsd_h'].append(lsd_high_score)
         metrics['lsd_l'].append(lsd_low_score)
+        metrics['2f-model'].append(mms_2f)
         # metrics['apd_ip'].append(apd_score[0])
         # metrics['apd_gd'].append(apd_score[1])
         # metrics['apd_iaf'].append(apd_score[2])
@@ -101,6 +108,8 @@ def main(h):
     lsd_mean = torch.stack(metrics['lsd'], dim=0).mean()
     lsdh_mean = torch.stack(metrics['lsd_h'], dim=0).mean()
     lsdl_mean = torch.stack(metrics['lsd_l'], dim=0).mean()
+    mms_2f_mean = torch.stack(metrics['2f-model'], dim=0).mean()
+    
     # apd_ip_mean = torch.stack(metrics['apd_ip'], dim=0).mean()
     # apd_gd_mean = torch.stack(metrics['apd_gd'], dim=0).mean()
     # apd_iaf_mean = torch.stack(metrics['apd_iaf'], dim=0).mean()
@@ -110,6 +119,7 @@ def main(h):
     print('SNR: {:.3f}'.format(snr_mean))
     print('LSDH: {:.3f}'.format(lsdh_mean))
     print('LSDL: {:.3f}'.format(lsdl_mean))
+    print('2f-model: {:.3f}'.format(mms_2f_mean))
     
     # print('APD_IP: {:.3f}'.format(apd_ip_mean))
     # print('APD_GD: {:.3f}'.format(apd_gd_mean))

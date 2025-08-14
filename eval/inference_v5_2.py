@@ -28,9 +28,7 @@ from src.flow.solver import ODE, EulerSolver, VectorFieldODE, CFGVectorFieldODE,
 from src.flow.path import ConditionalVectorFieldModel
 from src.flow.path_stft import get_path
 # from src.models.unetv3 import ConvNeXtUNetFiLM
-# from src.models.unetv4 import ConvNeXtUNetFiLM
 from src.models.unetv5 import ConvNeXtUNetCond
-
 
 # from src.trainer.stft_trainer_mask import STFTTrainerMask
 from src.trainer.stft_trainer_mask_sep import STFTTrainerMask
@@ -44,10 +42,9 @@ from src.utils.spectral_ops import AmplitudeCompressedComplexSTFT
 ## main utils
 
 
-# LOW_FREQ_BINS = 256
-LOW_FREQ_BINS = 80
+LOW_FREQ_BINS = 256
 HIGH_FREQ_START = 80
-F1_DICT: dict[int, int] = {8: 80, 12: 128, 16: 170, 24: 256}
+F1_DICT: dict[int, int] = {8: 85, 12: 128, 16: 170, 24: 256}
 
 
 def set_seed(seed=42):
@@ -143,7 +140,6 @@ def inference_single_file(config, ckpt_path, idx_to_test=0, exp_name='ode_result
     # Setup
     _config = config
     _config.dataset.common.sampling_rates = [sr_value]
-    # _config.dataset.val.tsv_path = "./data/piano_test.txt"
     model, solver, path, trainer = setup_model_and_solver(config, ckpt_path, method, device, guide)
     _, val_loader = prepare_dataloader(_config)
     val_dataset = val_loader.dataset
@@ -204,12 +200,12 @@ def main():
     # ckpt_path = "./ckpts/best_model.pth"
     ckpt_path = os.path.join(config.train.ckpt_save_dir, "best_model.pth")
     
-    for ode_steps in [6, 8, 10]:
-        # for idx_to_test in np.concatenate((np.array([1, 25, 55, 75, 95, 105, 135]), np.arange(0, 8000+1, 400))):
-        for idx_to_test in np.arange(0, 800+1, 20):
+    for ode_steps in [20]:
+        # for idx_to_test in np.arange (0, 2000, 100):
+        for idx_to_test in np.arange(0, 800+1, 40):
             inference_single_file(config, ckpt_path, idx_to_test=idx_to_test, 
                                   method=args.method, num_timesteps=ode_steps, 
-                                  device=DEVICE, exp_name=os.path.join(f'{args.exp_name}', f'{args.sr}khz', f'{args.guide}', args.method,f'{ode_steps}'),
+                                  device=DEVICE, exp_name=os.path.join(f'{args.sr}khz', f'{args.guide}', args.method,f'{ode_steps}'),
                                   guide=args.guide, sr_value=args.sr)
     # inference(config, device=args.device, save_gt=args.save_gt, exp_name=args.exp_name, log_term=args.log_term)
 

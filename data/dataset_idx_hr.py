@@ -25,6 +25,12 @@ def prepare_dataloader(config):
     train_dataset = make_dataset(config, 'train')
     val_dataset = make_dataset(config, 'val')
 
+    # collator
+    collator = WaveformCollator(
+        target_sr=config.dataset.common.sr,
+        sampling_rates_probs=config.collator.sampling_rates_probs
+    )
+
     # Optional ratio split
     if config.dataset.ratio < 1:
         train_size = int(config.dataset.ratio * len(train_dataset))
@@ -32,11 +38,14 @@ def prepare_dataloader(config):
 
     dl_args = dict(config.dataloader)
     dl_args['worker_init_fn'] = _worker_init_fn
+    dl_args['collate_fn'] = collator
     
     train_loader = DataLoader(train_dataset, shuffle=True, **dl_args)
+    
     val_loader_args = config.dataloader
     val_loader_args['worker_init_fn'] = _worker_init_fn
-    val_loader_args.batch_size = 1
+    val_loader_args['collate_fn'] = collator
+    val_loader_args['batch_size'] = 1
     val_loader = DataLoader(val_dataset, shuffle=False, **val_loader_args)
 
     return train_loader, val_loader
@@ -46,7 +55,7 @@ class Dataset(torch.utils.data.Dataset):
                  tsv_path: str,
                  num_samples=24000, #16384
                  sr=24000,
-                 sampling_rates=[8,16,24],
+                 sampling_rates=[8,16,24], # no use
                  mode="train"):
         self.num_samples, self.sr, self.mode = num_samples, sr, mode
         self.sampling_rates=sampling_rates
@@ -103,20 +112,69 @@ class Dataset(torch.utils.data.Dataset):
             y = y[...,:48000*4]
         else:
             sys.exit(f"unsupported mode! (train/val)") 
-            
-        # get sampling rate in [8, 16, 24] kHz        
-        low_sr = random.choice(self.sampling_rates)
-        target_sr_hz = int(low_sr) * 1000
-        lr = self._get_lr_wav(y, target_sr=target_sr_hz, orig_sr=self.sr)
-        
+         
         outdict = {
             'hr': y,
-            'lr_wave': lr,
-            'low_sr': low_sr,
             'filename': Path(wb_path).stem,
         }
 
         return outdict
+
+class WaveformCollator:
+    def __init__(self, 
+                 target_sr=48000, 
+                 sampling_rates_probs={8: 0.7, 12: 0.1, 16: 0.1, 24: 0.1}):
+        """
+        Initializes the collator.
+        Args:
+            target_sr (int): The high-resolution sample rate (e.g., 48000).
+            sampling_rates_probs (dict): A dictionary mapping sample rates (in kHz) to their sampling probabilities.
+                                         Example: {8: 0.7, 12: 0.1, 16: 0.1, 24: 0.1}
+        """
+        self.target_sr = target_sr
+        self.sampling_rates = list(sampling_rates_probs.keys())  # [8, 12, 16, 24]
+        self.probs = list(sampling_rates_probs.values()) # [0.7, 0.1, 0.1, 0.1]
+
+    def _apply_lpf(self, hr_wave, low_sr_khz):
+        """
+        Applies a low-pass filter by downsampling and then upsampling the waveform.
+        This correctly simulates the anti-aliasing filter effect.
+        """
+        original_len = hr_wave.shape[-1]
+        target_sr_hz = low_sr_khz * 1000
+        
+        # Downsample to the target low sample rate
+        lr_wave_resampled = torchaudio.functional.resample(
+            hr_wave, orig_freq=self.target_sr, new_freq=target_sr_hz
+        )
+        # Upsample back to the original high sample rate to match lengths
+        lr_wave_upsampled = torchaudio.functional.resample(
+            lr_wave_resampled, orig_freq=target_sr_hz, new_freq=self.target_sr
+        )
+        
+        lr_wave_upsampled = lr_wave_upsampled[..., :original_len]
+        return lr_wave_upsampled
+
+    def __call__(self, batch):
+        """
+        Processes a batch of data items from the Dataset.
+        """
+        # 1. Choose one low_sr for the entire batch based on given probabilities
+        low_sr_khz = random.choices(self.sampling_rates, self.probs, k=1)[0]
+        
+        # 2. Stack HR waveforms from the batch items
+        # Assuming dataset returns {'hr': tensor_shape_[1, T], ...}
+        hr_waves = torch.stack([item['hr'].squeeze(0) for item in batch])
+
+        # 3. Create LR versions by applying the LPF
+        lr_waves = self._apply_lpf(hr_waves, low_sr_khz)
+        
+        # 4. Return a dictionary that matches the trainer's expectation
+        return {
+            'hr': hr_waves.unsqueeze(1),       # Shape: [B, 1, T]
+            'lr_wave': lr_waves.unsqueeze(1), # Shape: [B, 1, T]
+            'low_sr': [low_sr_khz] * len(batch) # [B]
+        }
 
     """
     HR -> (Downsample) -> LR -> (Upsample) -> STFT extraction
